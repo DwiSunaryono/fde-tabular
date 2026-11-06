@@ -165,6 +165,20 @@ fde evaluate --data wine.csv --target target --trials 5 --members light
 
 On Windows, run each line separately.
 
+## How the data are split
+
+No row is used both to choose a model and to score it:
+
+1. `fde evaluate` and `fde demo` set aside a stratified share of the rows (20% by default) before fitting; these rows
+   are used only for the held-out scores.
+2. On the training rows, 3 outer folds decide whether the ensemble is used. The decision is made on rows that each
+   fold's models have not seen (the cross-fitted acceptance rule).
+3. Inside every fold, the learners are tuned and the combiner is fitted on 3 inner folds, and every imputer, encoder
+   and scaler is fitted on its own training rows only.
+
+To compare FDE with another tool, score both on the same held-out rows. A score computed on rows that were also used
+for tuning comes out higher than the score on new data.
+
 ## Options
 
 | Option | Default | Meaning |

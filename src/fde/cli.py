@@ -50,12 +50,25 @@ def _summary(r, test=None, n_test=None, saved=None):
              f"  Fit time       {r['fit_seconds']:.0f} s ({o['trials']} trials, {o['members']} members, {o['device'].upper()})"]
     if saved:
         lines.append(f"  Saved to       {saved}")
+    lines += ["", f"  How {'it was evaluated' if test else 'the model was chosen'} (no row is used both to choose a model and to score it)"]
+    step = 1
+    if test:
+        lines.append(f"    {step}. {n_test} rows were set aside before fitting and used only for the held-out scores below.")
+        step += 1
+    lines += [f"    {step}. On the training rows, 3 outer folds decided whether the ensemble is used, judged on rows",
+              "       that each fold's models had not seen.",
+              f"    {step + 1}. Inside every fold, the learners were tuned and the combiner fitted on 3 inner folds; every",
+              "       imputer, encoder and scaler was fitted on its own training rows only."]
     if test:
         lines += ["", f"  {'Held-out rows (' + str(n_test) + ')':24s} {'FDE':>8s} {'best tuned learner':>20s}"]
         for k, lab in (("macro_f1", "macro-F1"), ("weighted_f1", "weighted-F1"), ("balanced_accuracy", "balanced accuracy")):
             lines.append(f"    {lab:22s} {test['fde'][k]:8.4f} {test['best_tuned_learner'][k]:20.4f}")
         lines.append("  FDE kept the best tuned learner, so both columns are the same." if not r["uses_ensemble"] else
                      "  FDE used the ensemble; the second column shows the best tuned learner alone.")
+        lines += ["  To compare with another tool, score it on the same held-out rows; scores computed on rows that",
+                  "  were also used for tuning come out higher than they will be on new data."]
+    if not test:
+        lines += ["  To see how the model does on new data, use `fde evaluate` or score your own held-out rows."]
     print("\n".join(lines) + "\n")
 
 
