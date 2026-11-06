@@ -31,6 +31,13 @@ pip install fde-tabular
 Python 3.10 or later. Everything runs on the CPU: each tuned learner gets one thread, each extended member gets four
 (`member_threads`), and the four fit sets — three outer folds plus all rows — are built in parallel (`n_jobs`).
 
+FDE does not use a GPU. To avoid downloading the GPU build of PyTorch, install the CPU build first:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install fde-tabular
+```
+
 ## Use
 
 ```python
@@ -49,6 +56,7 @@ From the command line:
 fde fit --data train.csv --target label --out model.fde
 fde predict --model model.fde --data new.csv --proba --out scores.csv
 fde evaluate --data data.csv --target label --test-size 0.2   # holdout scores for FDE and the best tuned learner
+fde fit --data train.csv --target label --out light.fde --members light   # fewer members: faster prediction
 ```
 
 Text columns can be left as they are: every learner imputes and encodes them using only its own training rows, and
