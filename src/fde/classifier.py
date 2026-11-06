@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
-from . import __version__
+from . import __version__, device
 from .combiners import GRID_WIDE, apply, fast_score, fit_combiner
 from .deploy_test import OUTER_FOLDS, acceptance_rule, gate_metric
 from .extended import KINDS, fit_member, raw_frame
@@ -100,23 +100,20 @@ def plan_jobs(n_jobs, X):
     return jobs, f"{cores} CPU cores, {free / 1e9:.1f} GB memory free -> {jobs} parallel jobs"
 
 
-def gpu_note():
-    """Whether a CUDA GPU is visible. FDE runs on the CPU only, so that its results match the accompanying paper."""
-    import warnings
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            import torch
-            if torch.cuda.is_available():
-                return f"{torch.cuda.get_device_name(0)} found, not used (FDE runs on the CPU)"
-    except Exception:
-        pass
-    return "none used (FDE runs on the CPU)"
+def gpu_note(want):
+    """Device actually used, and a line for the system check."""
+    name = device.available()
+    if want == "gpu" and name:
+        return "gpu", f"{name}, used for XGBoost, CatBoost and the MLP (results can differ slightly from the CPU)"
+    if want == "gpu":
+        return "cpu", "no CUDA GPU found, so the CPU is used"
+    return "cpu", (f"{name} found, not used (--device gpu uses it)" if name else "none found; the CPU is used")
 
 
-def _call(key, fn, args):
-    """One parallel task; library notices (deprecations, CUDA probing) are not shown."""
+def _call(key, fn, args, dev="cpu"):
+    """One parallel task on device `dev`; library notices (deprecations, CUDA probing) are not shown."""
     import warnings
+    device.use(dev)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return key, fn(*args)
@@ -130,13 +127,13 @@ def _weight(key):
     return float(COST.get(key[-1] if isinstance(key, tuple) else key, 1))
 
 
-def _run(tasks, n_jobs, stage, verbose, say):
+def _run(tasks, n_jobs, stage, verbose, say, dev="cpu"):
     """Runs {key: (fn, args, label)} on n_jobs processes, slow tasks first; returns {key: result}."""
     from joblib import Parallel, delayed
     order = sorted(tasks, key=_weight, reverse=True)
     bar, out = _Bar(len(tasks), stage, verbose, sum(_weight(k) for k in order)), {}
     for key, r in Parallel(n_jobs=n_jobs, backend="loky", return_as="generator_unordered")(
-            delayed(_call)(key, tasks[key][0], tasks[key][1]) for key in order):
+            delayed(_call)(key, tasks[key][0], tasks[key][1], dev) for key in order):
         out[key] = r; bar.step(tasks[key][2], _weight(key))
     if verbose:
         bar.close(say)
@@ -160,17 +157,21 @@ class FDEClassifier:
     members : "full" (default) or "light", the latter keeping only the imbalance-handling members: lighter and
         faster.
     member_threads : int, threads per extended member (4 in the evaluated configuration).
+    device : "cpu" (default; the results of the accompanying paper) or "gpu" (XGBoost, CatBoost and the MLP on the first
+        CUDA GPU; faster on large data, results can differ slightly from the CPU; falls back to the CPU without a GPU).
     verbose : int, 0 silent; 1 progress messages on stderr; 2 also prints the report when fitting ends.
     """
 
-    def __init__(self, random_state=0, n_jobs=-1, trials=20, members="full", member_threads=4, verbose=0):
+    def __init__(self, random_state=0, n_jobs=-1, trials=20, members="full", member_threads=4, device="cpu", verbose=0):
         self.random_state, self.n_jobs, self.trials = random_state, n_jobs, trials
-        self.members, self.member_threads, self.verbose = members, member_threads, verbose
+        self.members, self.member_threads, self.device, self.verbose = members, member_threads, device, verbose
 
     def fit(self, X, y):
         t0 = time.time()
         if self.members not in ("full", "light"):
             raise ValueError('members must be "full" or "light"')
+        if self.device not in ("cpu", "gpu"):
+            raise ValueError('device must be "cpu" or "gpu"')
         Xr, self.cat_ = raw_frame(X)
         X = prepare_frame(X); y_raw = pd.Series(np.asarray(y)).astype(str)
         self.classes_ = np.array(sorted(y_raw.unique()))
@@ -188,13 +189,13 @@ class FDEClassifier:
         say("checking the system ...")
         jobs, machine = plan_jobs(self.n_jobs, X)
         say(f"  CPU and memory: {machine}")
-        if self.verbose:
-            say(f"  GPU: {gpu_note()}")
+        self.device_used_, gpu_line = gpu_note(self.device)
+        say(f"  GPU: {gpu_line}")
         splits = [inner_splits(yf, seed, 3) for _, yf, _ in sets]
         types = tuned_types(len(y))
         # stage 1: every learner type in every fit set is tuned as its own task
         tuned = _run({(k, mt): (tune_one, (Xf, yf, K, self.metric_, seed, splits[k], self.trials, mt), f"{names[k]}: {mt}")
-                      for k, (Xf, yf, _) in enumerate(sets) for mt in types}, jobs, "Stage 1/3 Tuning learners", self.verbose, say)
+                      for k, (Xf, yf, _) in enumerate(sets) for mt in types}, jobs, "Stage 1/3 Tuning learners", self.verbose, say, self.device_used_)
         # stage 2: the best learner and every member of every fit set, each as its own task
         best, tasks = [], {}
         for k, (Xf, yf, Xrf) in enumerate(sets):
@@ -208,7 +209,7 @@ class FDEClassifier:
                 tasks[(k, lab)] = (member_task, (make, Xf, yf, splits[k], K, True), f"{names[k]}: {lab}")
             for kind in KINDS if self.members == "full" else ():
                 tasks[(k, kind)] = (fit_member, (kind, Xrf, yf, K, seed, self.cat_, self.member_threads), f"{names[k]}: {kind}")
-        built = _run(tasks, jobs, "Stage 2/3 Building members", self.verbose, say)
+        built = _run(tasks, jobs, "Stage 2/3 Building members", self.verbose, say, self.device_used_)
         oofs, models = [{} for _ in sets], [{} for _ in sets]
         for (k, lab), (o, m) in built.items():
             oofs[k][lab] = o.astype(np.float32).astype(np.float64); models[k][lab] = m
@@ -240,7 +241,8 @@ class FDEClassifier:
                                             "accepted": bool(rule.accept)},
                         "crossfit_scores": self.crossfit_,
                         "uses_ensemble": self.uses_ensemble_, "models_in_predictor": 1 + (len(self.model_["labs"]) if self.uses_ensemble_ else 0),
-                        "options": {"members": self.members, "trials": self.trials, "member_threads": self.member_threads},
+                        "options": {"members": self.members, "trials": self.trials, "member_threads": self.member_threads,
+                                    "device": self.device_used_},
                         "fit_seconds": round(time.time() - t0, 1)}
         if self.verbose >= 2:
             print(json.dumps(self.report_, indent=1))

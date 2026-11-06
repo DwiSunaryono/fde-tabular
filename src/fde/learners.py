@@ -6,6 +6,8 @@ ahead of a split. `mask` selects columns by name.
 import warnings
 
 import numpy as np
+
+from . import device
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
@@ -85,7 +87,8 @@ def _estimator(mt, p, K, seed, n, proba=True):
     if mt == "xgb":
         from xgboost import XGBClassifier
         return XGBClassifier(learning_rate=p["lr"], max_depth=p["md"], n_estimators=p["ne"], subsample=p["ss"],
-                             colsample_bytree=p["cs"], tree_method="hist", device="cpu", n_jobs=1, random_state=seed, verbosity=0)
+                             colsample_bytree=p["cs"], tree_method="hist", device="cuda" if device.gpu() else "cpu", n_jobs=1,
+                             random_state=seed, verbosity=0)
     if mt == "lgbm":
         from lightgbm import LGBMClassifier
         return LGBMClassifier(learning_rate=p["lr"], num_leaves=p["nl"], n_estimators=p["ne"], subsample=p["ss"],
@@ -100,8 +103,9 @@ def _estimator(mt, p, K, seed, n, proba=True):
         return DecisionTreeClassifier(max_depth=p["d"], min_samples_leaf=p.get("msl", 1), random_state=seed)
     if mt == "cat":
         from catboost import CatBoostClassifier
+        gpu = dict(task_type="GPU", devices="0", gpu_ram_part=device.GPU_RAM_PART) if device.gpu() else {}
         return CatBoostClassifier(learning_rate=p["lr"], depth=p["dep"], iterations=p["it"], l2_leaf_reg=p["l2"],
-                                  thread_count=1, random_seed=seed, verbose=0, allow_writing_files=False)
+                                  thread_count=1, random_seed=seed, verbose=0, allow_writing_files=False, **gpu)
     if mt == "rf":
         return RandomForestClassifier(n_estimators=p["ne"], max_features=p["mf"], min_samples_leaf=p["msl"], n_jobs=1, random_state=seed)
     if mt == "et":
@@ -175,6 +179,8 @@ class Member:
                 # AdaBoost inside EasyEnsemble/RUSBoost can stop with a base learner worse than random: fall back to
                 # the class proportions
                 self.prior = np.bincount(yy, minlength=len(self.classes_)) / len(yy); self.pipe = None
+        if self.pipe is not None and self.mt == "xgb" and device.gpu():
+            self.pipe.named_steps["est"].set_params(device="cpu")     # predict on the CPU
         return self
 
     def predict(self, X):

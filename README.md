@@ -172,9 +172,17 @@ On Windows, run each line separately.
 | `members` (`--members`) | `full` | `light` drops the extended members: 14 models instead of 22, several times faster at prediction, with somewhat lower accuracy |
 | `trials` (`--trials`) | 20 | Optuna trials for each learner type |
 | `member_threads` | 4 | threads per extended member (Python API only) |
+| `device` (`--device`) | `cpu` | `gpu` trains XGBoost, CatBoost and the MLP on the first CUDA GPU (LightGBM stays on the CPU: its GPU mode was slower in our tests). Results can differ slightly from the CPU; see the note below |
 | `verbose` | 0 (1 on the command line) | 1 shows the system check and a progress bar with the stage and the remaining time; 2 also prints the report |
 
 These defaults are the configuration evaluated in the accompanying paper.
+
+**GPU note.** The results of the accompanying paper were obtained on the CPU, and the CPU is the default. On our test
+machine (32 CPU cores, one RTX 4070) fitting was faster on the CPU than with `--device gpu`: 26 s against 139 s for
+`fde demo`, and 365 s against 704 s for 40,000 training rows, because many CPU tasks run at the same time while GPU
+tasks wait for the one GPU.
+The GPU option is offered for machines with few CPU cores; check the time on your own data. Models fitted with
+`--device gpu` predict on the CPU, so they also run on machines without a GPU.
 
 ## Cost
 

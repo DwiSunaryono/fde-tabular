@@ -21,7 +21,8 @@ def _read(path):
 
 def _clf(a):
     from .classifier import FDEClassifier
-    return FDEClassifier(random_state=a.seed, n_jobs=a.jobs, trials=a.trials, members=a.members, verbose=0 if a.quiet else 1)
+    return FDEClassifier(random_state=a.seed, n_jobs=a.jobs, trials=a.trials, members=a.members, device=a.device,
+                         verbose=0 if a.quiet else 1)
 
 
 def _scores(y, p):
@@ -47,6 +48,9 @@ def _common(s, trials=20, members="full"):
     s.add_argument("--trials", type=int, default=trials, help=f"Optuna trials for each learner type (default: {trials})")
     s.add_argument("--members", choices=("full", "light"), default=members,
                    help=f"light keeps the imbalance-handling members only: faster, slightly less accurate (default: {members})")
+    s.add_argument("--device", choices=("cpu", "gpu"), default="cpu",
+                   help="gpu trains XGBoost, CatBoost and the MLP on a CUDA GPU: faster on large data, results can differ "
+                        "slightly from the CPU (default: cpu)")
     s.add_argument("--quiet", action="store_true", help="no progress messages")
 
 

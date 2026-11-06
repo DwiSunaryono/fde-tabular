@@ -57,3 +57,9 @@ def test_unknown_members_rejected():
     X, y = _data(n=60)
     with pytest.raises(ValueError):
         FDEClassifier(members="other").fit(X, y)
+
+
+def test_unknown_device_rejected():
+    X, y = _data(n=60)
+    with pytest.raises(ValueError):
+        FDEClassifier(device="tpu").fit(X, y)

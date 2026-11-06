@@ -20,6 +20,8 @@ of its own fold model only.
 """
 import numpy as np
 import pandas as pd
+
+from . import device
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedKFold
@@ -82,10 +84,11 @@ def _mlp(A, ya, H, yh, K, seed, threads):
     for _ in range(3):
         layers += [torch.nn.Linear(w, 256), torch.nn.ReLU(), torch.nn.Dropout(0.1)]; w = 256
     net = torch.nn.Sequential(*layers, torch.nn.Linear(w, K))
+    dev = "cuda" if device.gpu() else "cpu"; net.to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=0.0)
     lossf, evalf = torch.nn.CrossEntropyLoss(label_smoothing=0.0), torch.nn.CrossEntropyLoss()
-    At, yt = torch.tensor(A, dtype=torch.float32), torch.tensor(ya, dtype=torch.long)
-    Ht, yht = torch.tensor(H, dtype=torch.float32), torch.tensor(yh, dtype=torch.long)
+    At, yt = torch.tensor(A, dtype=torch.float32, device=dev), torch.tensor(ya, dtype=torch.long, device=dev)
+    Ht, yht = torch.tensor(H, dtype=torch.float32, device=dev), torch.tensor(yh, dtype=torch.long, device=dev)
     best, state, wait, g = 1e18, None, 0, torch.Generator().manual_seed(seed)
     for _ in range(200):
         net.train()
@@ -101,7 +104,7 @@ def _mlp(A, ya, H, yh, K, seed, threads):
             if wait >= 10:
                 break
     net.load_state_dict(state); net.eval()
-    return net
+    return net.cpu()                                     # predict on the CPU
 
 
 class Bagged:
@@ -159,8 +162,9 @@ def fit_member(kind, Xf, yf, K, seed, cat, threads=4):
         h = h0[code[yf[h0]] >= 0]; yh = code[yf[h]]; cls = None if len(cls) == K else cls
         if kind == "catn_cat":
             from catboost import CatBoostClassifier
+            gpu = dict(task_type="GPU", devices="0", gpu_ram_part=device.GPU_RAM_PART) if device.gpu() else {}
             m = CatBoostClassifier(iterations=5000, learning_rate=0.05, depth=6, thread_count=threads, random_seed=seed, verbose=0,
-                                   allow_writing_files=False, od_type="Iter", od_wait=100, cat_features=cat)
+                                   allow_writing_files=False, od_type="Iter", od_wait=100, cat_features=cat, **gpu)
             m.fit(Xf.iloc[a], ya, eval_set=(Xf.iloc[h], yh), use_best_model=True)
             mem.parts.append((("none", None), m, cls)); oof[h0] = _proba(m, Xf.iloc[h0], K, cls)
             continue
@@ -176,8 +180,9 @@ def fit_member(kind, Xf, yf, K, seed, cat, threads=4):
             else:
                 from xgboost import XGBClassifier
                 m = XGBClassifier(n_estimators=5000, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8, tree_method="hist",
-                                  enable_categorical=True, max_cat_to_onehot=1, n_jobs=threads, random_state=seed, verbosity=0, early_stopping_rounds=100)
-                m.fit(A, ya, eval_set=[(H, yh)], verbose=False)
+                                  enable_categorical=True, max_cat_to_onehot=1, n_jobs=threads, random_state=seed, verbosity=0, early_stopping_rounds=100,
+                                  device="cuda" if device.gpu() else "cpu")
+                m.fit(A, ya, eval_set=[(H, yh)], verbose=False); m.set_params(device="cpu")
             mem.parts.append((("native", cats), m, cls)); oof[h0] = _proba(m, H0, K, cls)
             continue
         ct = _coder(Xf, cat, kind).fit(Xf.iloc[a])
@@ -190,7 +195,8 @@ def fit_member(kind, Xf, yf, K, seed, cat, threads=4):
         else:
             from xgboost import XGBClassifier
             m = XGBClassifier(n_estimators=5000, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8, tree_method="hist",
-                              n_jobs=threads, random_state=seed, verbosity=0, early_stopping_rounds=100)
-            m.fit(A, ya, eval_set=[(H, yh)], verbose=False)
+                              n_jobs=threads, random_state=seed, verbosity=0, early_stopping_rounds=100,
+                              device="cuda" if device.gpu() else "cpu")
+            m.fit(A, ya, eval_set=[(H, yh)], verbose=False); m.set_params(device="cpu")
         mem.parts.append((("ct", ct), m, cls)); oof[h0] = _proba(m, H0, K, cls)
     return oof, mem
