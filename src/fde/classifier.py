@@ -17,6 +17,9 @@ accurate in the accompanying paper.
 """
 import json, os, sys, time
 
+if sys.platform == "darwin":
+    # macOS: load the OpenMP library of LightGBM and XGBoost before PyTorch's copy (the other order can crash)
+    import lightgbm, xgboost  # noqa: E401,F401
 import joblib
 import numpy as np
 import pandas as pd
@@ -84,8 +87,8 @@ def plan_jobs(n_jobs, X):
 
 
 def gpu_note(want):
-    """Device actually used, and a line for the system check."""
-    name = device.available()
+    """Device actually used, and a line for the system check. PyTorch is loaded only when the GPU is requested."""
+    name = device.available() if want == "gpu" else device.detected()
     if want == "gpu" and name:
         return "gpu", f"{name}, used for XGBoost, CatBoost and the MLP (results can differ slightly from the CPU)"
     if want == "gpu":

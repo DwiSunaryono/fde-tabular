@@ -17,8 +17,21 @@ def gpu():
     return DEVICE == "gpu"
 
 
+def detected():
+    """Name of the first NVIDIA GPU from nvidia-smi, or None. Does not load PyTorch, so that the main process loads the
+    OpenMP library of LightGBM and XGBoost first (on macOS, loading PyTorch's copy first can crash the process)."""
+    import shutil, subprocess
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
+        return out.stdout.strip().splitlines()[0] if out.returncode == 0 and out.stdout.strip() else None
+    except Exception:
+        return None
+
+
 def available():
-    """Name of the first CUDA GPU, or None."""
+    """Name of the first CUDA GPU usable by PyTorch, or None (loads PyTorch)."""
     import warnings
     try:
         with warnings.catch_warnings():
