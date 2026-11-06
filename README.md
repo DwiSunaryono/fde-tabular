@@ -24,21 +24,71 @@ in every other case.
 
 ## Installation
 
-```bash
-pip install fde-tabular
-```
+Python 3.10 or later. Installing into a fresh virtual environment keeps FDE apart from other projects. FDE runs on the
+CPU by default, so the CPU build of PyTorch is enough and much smaller than the GPU build. Choose your system:
 
-Python 3.10 or later. Everything runs on the CPU: each tuned learner gets one thread, each extended member gets four
-(`member_threads`). Before fitting, FDE checks the free CPU cores and memory and runs that many tasks in parallel
-(`n_jobs`); the progress bar shows the three stages (tuning the learners, building the members, fitting the
-combiners) with an estimate of the remaining time.
-
-FDE does not use a GPU. To avoid downloading the GPU build of PyTorch, install the CPU build first:
+<details open>
+<summary><b>Linux</b></summary>
 
 ```bash
+python3 -m venv ~/fde-env
+source ~/fde-env/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install fde-tabular
+fde demo
 ```
+
+If `python3 -m venv` reports that `ensurepip` is missing (Debian, Ubuntu), install it first with
+`sudo apt install python3-venv`.
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+```bash
+brew install libomp
+python3 -m venv ~/fde-env
+source ~/fde-env/bin/activate
+pip install torch
+pip install fde-tabular
+fde demo
+```
+
+LightGBM and XGBoost need the OpenMP library (`libomp`) from Homebrew. On macOS the default PyTorch build already runs
+on the CPU.
+</details>
+
+<details>
+<summary><b>Windows (Command Prompt)</b></summary>
+
+Type or paste **one line at a time** and press Enter after each line (if `py` is not found, use `python` instead):
+
+```bat
+py -m venv %USERPROFILE%\fde-env
+%USERPROFILE%\fde-env\Scripts\activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install fde-tabular
+fde demo
+```
+
+In PowerShell, activate with `$env:USERPROFILE\fde-env\Scripts\Activate.ps1` instead (if scripts are blocked, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once). The Command Prompt does not treat `#` as a comment, so do
+not paste comments after a command. Commands written for Linux, such as `source` or `~/`, do not work here.
+</details>
+
+<details>
+<summary><b>With a CUDA GPU (any system, optional)</b></summary>
+
+Install the PyTorch build for your CUDA version from <https://pytorch.org> instead of the CPU build, then
+`pip install fde-tabular`, and pass `--device gpu` (or `device="gpu"`). See the GPU note under Options before using it.
+</details>
+
+Each time you open a new terminal, activate the environment again (the second line above) before using `fde`.
+
+Everything runs on the CPU unless `--device gpu` is given: each tuned learner gets one thread, each extended member
+gets four (`member_threads`). Before fitting, FDE checks the free CPU cores and memory and runs that many tasks in
+parallel (`n_jobs`); the progress bar shows the three stages (tuning the learners, building the members, fitting the
+combiners) with an estimate of the remaining time.
 
 ## Quick start
 
