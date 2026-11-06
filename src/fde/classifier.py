@@ -110,24 +110,72 @@ def _weight(key):
     return float(COST.get(key[-1] if isinstance(key, tuple) else key, 1))
 
 
+def _ansi_ok(stream):
+    """True when the terminal shows colours; on Windows 10 and later this switches on the console's colour mode."""
+    if not stream.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32; h = k.GetStdHandle(-12); mode = ctypes.c_uint32()
+        return bool(k.GetConsoleMode(h, ctypes.byref(mode)) and k.SetConsoleMode(h, mode.value | 0x0004))
+    except Exception:
+        return False
+
+
+class _Bar:
+    """One-line progress bar on stderr (terminal only): stage, bar, percentage, tasks done, elapsed and remaining time,
+    and the tasks still running. Redrawn twice a second, so that the clock keeps moving while a long task runs."""
+
+    def __init__(self, n, work, stage, on):
+        self.n, self.work, self.stage, self.done, self.got, self.t0, self.what = n, max(work, 1e-9), stage, 0, 0.0, time.time(), "starting"
+        self.on = on and sys.stderr.isatty()
+        if not self.on:
+            return
+        enc = (getattr(sys.stderr, "encoding", "") or "").lower().replace("-", "")
+        self.full, self.empty = ("\u2588", "\u2591") if enc in ("utf8", "utf16", "utf16le") else ("#", "-")
+        c = _ansi_ok(sys.stderr)
+        self.c = (lambda code, t: f"\033[{code}m{t}\033[0m") if c else (lambda code, t: t)
+        import threading
+        self.stop = threading.Event(); threading.Thread(target=self._tick, daemon=True).start()
+
+    def _tick(self):
+        while not self.stop.wait(0.5):
+            self.draw()
+
+    def step(self, weight, what):
+        self.done += 1; self.got += weight; self.what = what; self.draw()
+
+    def draw(self):
+        if not self.on:
+            return
+        el = time.time() - self.t0; frac = min(self.got / self.work, 1.0); w = 26; k = int(w * frac)
+        rem = max(el / frac - el, 0) if frac > 0 else 0
+        fmt = lambda t: f"{int(t // 60)}:{int(t % 60):02d}"
+        bar = self.c("32", self.full * k) + self.c("90", self.empty * (w - k))
+        line = (f"\r{self.c('1', self.stage)}  {bar} {self.c('1', f'{100 * frac:3.0f}%')}  {self.done}/{self.n}  "
+                f"{fmt(el)} elapsed  {self.c('36', '~' + fmt(rem) + ' left')}  {self.c('90', self.what[:30]):30s}")
+        sys.stderr.write(line); sys.stderr.flush()
+
+    def close(self):
+        if self.on:
+            self.stop.set(); sys.stderr.write("\r" + " " * 130 + "\r"); sys.stderr.flush()
+
+
 def _run(tasks, n_jobs, stage, verbose, say, dev="cpu", con=None):
     """Runs {key: (fn, args, label)} on n_jobs processes, slow tasks first, with a progress bar; returns {key: result}."""
     from joblib import Parallel, delayed
-    from rich.progress import (BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn,
-                               TimeRemainingColumn)
     order = sorted(tasks, key=_weight, reverse=True); out, t0 = {}, time.time()
-    cols = (SpinnerColumn("line", style="cyan"), TextColumn("[bold]{task.description}"),
-            BarColumn(bar_width=28, style="grey35", complete_style="magenta", finished_style="green"),
-            TaskProgressColumn(), TextColumn("{task.fields[n]}"), TextColumn("[dim]elapsed[/]"), TimeElapsedColumn(),
-            TextColumn("[dim]left ~[/]"), TimeRemainingColumn(), TextColumn("[dim]{task.fields[what]}"))
-    with Progress(*cols, console=con or console(), transient=True, disable=not verbose) as prog:
-        bar = prog.add_task(stage, total=sum(_weight(k) for k in order), n=f"0/{len(order)}", what="starting")
+    bar = _Bar(len(order), sum(_weight(k) for k in order), stage, verbose)
+    try:
         for key, r in Parallel(n_jobs=n_jobs, backend="loky", return_as="generator_unordered")(
                 delayed(_call)(key, tasks[key][0], tasks[key][1], dev) for key in order):
             out[key] = r; left = [k for k in order if k not in out]
             names = sorted({str(k[-1]) if isinstance(k, tuple) else str(k) for k in left})
-            prog.update(bar, advance=_weight(key), n=f"{len(out)}/{len(order)}",
-                        what=(f"{len(left)} left: {', '.join(names)}" if left else "finishing")[:40])
+            bar.step(_weight(key), f"{len(left)} left: {', '.join(names)}" if left else "finishing")
+    finally:
+        bar.close()
     say(f"{stage}: {len(order)} tasks in {time.time() - t0:.0f} s", "green")
     return out
 
