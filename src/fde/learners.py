@@ -1,7 +1,7 @@
 """Learners, preprocessing and Optuna search spaces.
 
-Every estimator is wrapped with its own preprocessing, fitted on the rows it is trained on (no statistic is
-computed before a split). Columns are selected by name through `mask`.
+Each estimator carries its own preprocessing, fitted on the rows it is trained on, so no statistic is computed
+ahead of a split. `mask` selects columns by name.
 """
 import warnings
 
@@ -19,7 +19,7 @@ from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
-# the twelve learner types from which the best tuned learner is chosen
+# the twelve learner types the best tuned learner is chosen from
 LEARNER_TYPES = ("hgb", "xgb", "lgbm", "cat", "rf", "et", "svc", "knn", "lr", "nb", "mlp", "dt")
 SCALE_SENSITIVE = {"svc", "knn", "lr", "nb", "mlp"}      # scaled numeric columns, one-hot categoricals
 warnings.filterwarnings("ignore", message=".*probability.*deprecated.*")
@@ -91,7 +91,7 @@ def _estimator(mt, p, K, seed, n, proba=True):
         return LGBMClassifier(learning_rate=p["lr"], num_leaves=p["nl"], n_estimators=p["ne"], subsample=p["ss"],
                               subsample_freq=1, colsample_bytree=p["cs"], n_jobs=1, random_state=seed, verbose=-1)
     if mt == "svc":
-        # probability=True: Platt scaling fitted by internal 5-fold CV on the training rows only
+        # probability=True: Platt scaling, fitted by internal 5-fold CV on the training rows only
         return SVC(C=p["c"], gamma=p["g"], kernel="rbf", probability=proba, random_state=seed,
                    max_iter=(500_000 if n <= 5000 else 200_000), cache_size=500)
     if mt == "knn":
@@ -110,7 +110,7 @@ def _estimator(mt, p, K, seed, n, proba=True):
         return LogisticRegression(C=p["c"], max_iter=2000)
     if mt == "nb":
         return GaussianNB(var_smoothing=p["vs"])
-    if mt == "brf":                                        # imbalanced-learn ensembles (members only)
+    if mt == "brf":                                        # imbalanced-learn ensembles (used as members only)
         from imblearn.ensemble import BalancedRandomForestClassifier
         return BalancedRandomForestClassifier(n_estimators=p["ne"], sampling_strategy="all", replacement=True, bootstrap=False,
                                               n_jobs=1, random_state=seed)
@@ -130,7 +130,7 @@ class Member:
     """One estimator with its own column subset and preprocessing; predict_proba is aligned to classes 0..K-1."""
 
     def __init__(self, mt, params, mask, K, seed=0, proba=True):
-        # proba=False: label-only scoring during search (SVC skips Platt scaling)
+        # proba=False: labels only while searching (SVC skips Platt scaling)
         self.mt, self.params, self.mask, self.K, self.seed, self.proba = mt, dict(params), list(mask), K, seed, proba
 
     def fit(self, X, y, balanced=False):
@@ -151,12 +151,12 @@ class Member:
         est = _estimator(self.mt, self.params, self.K, self.seed, len(y), self.proba)
         if self.mt == "knn":
             est.n_neighbors = max(1, min(est.n_neighbors, len(y) - 1))
-        # labels re-indexed to 0..len(classes_)-1 so that XGBoost accepts a fold with an absent class
+        # labels re-indexed to 0..len(classes_)-1, so that XGBoost accepts a fold in which a class is absent
         self._map = {c: i for i, c in enumerate(self.classes_)}
         self.pipe = Pipeline([("pre", ColumnTransformer(steps)), ("est", est)])
         self.prior = None
         if Xs.nunique(dropna=True).max() <= 1 and len(self.classes_) > 1:
-            # every selected column is constant on these rows: predict the class proportions
+            # every selected column is constant here: predict the class proportions
             self.prior = np.bincount(np.vectorize(self._map.get)(y), minlength=len(self.classes_)) / len(y)
             self.pipe = None
         elif len(self.classes_) == 1:
@@ -164,7 +164,7 @@ class Member:
         else:
             yy = np.vectorize(self._map.get)(y)
             try:
-                if balanced and self.mt not in ("knn", "mlp"):     # balanced class weights (knn and mlp take none)
+                if balanced and self.mt not in ("knn", "mlp"):     # balanced class weights (knn and mlp accept none)
                     cnt = np.bincount(yy); w = (len(yy) / (len(cnt) * cnt))[yy]
                     self.pipe.fit(Xs, yy, est__sample_weight=w)
                 else:
@@ -172,7 +172,8 @@ class Member:
             except ValueError:
                 if self.mt not in ("eec", "rusb"):
                     raise
-                # AdaBoost inside EasyEnsemble/RUSBoost can stop with a base learner worse than random: class proportions
+                # AdaBoost inside EasyEnsemble/RUSBoost can stop with a base learner worse than random: fall back to
+                # the class proportions
                 self.prior = np.bincount(yy, minlength=len(self.classes_)) / len(yy); self.pipe = None
         return self
 

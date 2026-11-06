@@ -1,15 +1,16 @@
-"""Combiners of the best tuned learner and the members, fitted on inner out-of-fold probabilities only.
+"""Combiners of the best tuned learner and the members, fitted on inner out-of-fold probabilities alone.
 
-  stack   multinomial logistic regression on the probabilities of the best learner and the members; C in
-          {0.01, 0.1, 1, 10} chosen by cross-validated Brier score (stratified 3-fold on the out-of-fold rows); kept
-          only when that Brier score is lower than the best learner's
-  scale   per-class probability scales chosen by coordinate ascent (2 passes over the classes) on out-of-fold
-          probabilities with the run metric; grid {0.5, 0.67, 1, 1.5, 2, 3} (the "wide" option uses
+  stack   multinomial logistic regression over the probabilities of the best learner and the members; C comes from
+          {0.01, 0.1, 1, 10}, picked by cross-validated Brier score (stratified 3-fold over the out-of-fold rows),
+          and the stack is kept only if that Brier score beats the best learner's
+  scale   per-class probability scales found by coordinate ascent (2 passes over the classes) on out-of-fold
+          probabilities, using the run metric; grid {0.5, 0.67, 1, 1.5, 2, 3} (FDEClassifier takes the wide grid
           {0.25, 0.5, 0.67, 1, 1.5, 2, 3, 5, 8, 12, 20})
-  stack_scaled  stack followed by the scales chosen on its cross-validated probabilities
-  mixed         the average of stack_scaled and the member mean, followed by scales chosen on that average
-A combiner that keeps nothing (no stack, no scale) returns the best learner unchanged (weight 0).
-The fitted combiner is returned as a small specification that is applied to new probabilities by `apply`.
+  stack_scaled  stack, then the scales chosen on the stack's cross-validated probabilities
+  mixed         the mean of stack_scaled and the member mean, then scales chosen on that mean
+A combiner that keeps nothing (neither stack nor scale) hands back the best learner untouched (weight 0).
+Fitting returns a small specification, which `apply` turns into probabilities for new rows.
+FDEClassifier fits stack_scaled on the wide grid; the other combiners can be reached through `fit_combiner`.
 """
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -22,13 +23,13 @@ GRID_WIDE = (0.25, 0.5, 0.67, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0)
 
 
 def fast_score(y, p, K, metric):
-    """Weighted or macro F1 from a K x K confusion matrix (same values as sklearn f1_score)."""
+    """Weighted or macro F1 from a K x K confusion matrix, matching sklearn's f1_score."""
     cm = np.bincount(y * K + p, minlength=K * K).reshape(K, K)
     tp = np.diag(cm).astype(float); row = cm.sum(1); col = cm.sum(0)
     f1 = np.divide(2 * tp, row + col, out=np.zeros(K), where=(row + col) > 0)
     if metric == "wF1":
         return float((row * f1).sum() / max(row.sum(), 1))
-    present = (row + col) > 0                     # sklearn macro averages over labels present in y or p
+    present = (row + col) > 0                     # sklearn's macro average covers labels present in y or p
     return float(f1[present].mean())
 
 
@@ -41,7 +42,7 @@ def _proba(m, Z, K):
 
 
 def scales(o_sel, y, K, metric, grid=GRID):
-    """Per-class scales by coordinate ascent (2 passes); None when no scale improves the score."""
+    """Per-class scales found by coordinate ascent (2 passes); None if no scale improves the score."""
     sc = lambda p: fast_score(y, p.argmax(1), K, metric)
     w = np.ones(K); best = sc(o_sel)
     for _ in range(2):
@@ -55,7 +56,8 @@ def scales(o_sel, y, K, metric, grid=GRID):
 
 
 def stack(oof, labs, y, K, seed):
-    """(cv probabilities, fitted model or None). Columns: the best learner, then the members in `labs` order."""
+    """(cross-validated probabilities, fitted model or None). Columns hold the best learner first, then the members
+    in `labs` order."""
     o = oof["P1"]
     if not labs or len(np.unique(y)) < 2:
         return o, None
@@ -80,7 +82,7 @@ def stack(oof, labs, y, K, seed):
 
 
 def fit_combiner(kind, oof, labs, y, K, metric, seed, grid=GRID):
-    """Fits combiner `kind` ('stack_scaled' or 'mixed'). Returns (spec, cross-fitted/inner probabilities, weight)."""
+    """Fit combiner `kind` ('stack_scaled' or 'mixed'); returns (spec, combined probabilities, weight)."""
     o = oof["P1"]
     cv, lr = stack(oof, labs, y, K, seed)
     w = scales(cv, y, K, metric, grid)
@@ -93,7 +95,7 @@ def fit_combiner(kind, oof, labs, y, K, metric, seed, grid=GRID):
         if s_a == 0:
             return {"kind": "best"}, o, 0.0
         return spec, s_o, 1.0
-    # mixed: average of stack_scaled and the member mean, then scales
+    # mixed: mean of stack_scaled and the member mean, then scales
     if not labs:
         m_o, m_a = o, 0.0
     else:
@@ -107,7 +109,8 @@ def fit_combiner(kind, oof, labs, y, K, metric, seed, grid=GRID):
 
 
 def apply(spec, probs):
-    """Probabilities of the combined model; probs: {label: probabilities} of the best learner ('P1') and members."""
+    """Probabilities from the combined model; `probs` maps each label to its probabilities (the best learner is
+    'P1')."""
     if spec["kind"] == "best":
         return probs["P1"]
     K = spec["K"]

@@ -5,14 +5,14 @@ from sklearn.datasets import make_classification
 
 from fde import FDEClassifier
 from fde.combiners import fast_score
-from fde.deploy_test import deployment_test, gate_metric
+from fde.deploy_test import acceptance_rule, gate_metric
 
 
 def _data(n=400, weights=(0.85, 0.15), seed=0):
     X, y = make_classification(n_samples=n, n_features=8, n_informative=4, weights=list(weights), random_state=seed)
     X = pd.DataFrame(X, columns=[f"x{i}" for i in range(X.shape[1])])
-    X["colour"] = np.where(X["x0"] > 0, "red", "blue")              # a text column
-    X.loc[::17, "x1"] = np.nan                                       # missing values
+    X["colour"] = np.where(X["x0"] > 0, "red", "blue")              # one text column
+    X.loc[::17, "x1"] = np.nan                                       # some missing values
     return X, np.where(y == 1, "yes", "no")
 
 
@@ -23,9 +23,9 @@ def test_fast_score_matches_sklearn():
     assert abs(fast_score(y, p, 3, "macroF1") - f1_score(y, p, average="macro")) < 1e-12
 
 
-def test_deployment_test_identical_predictions_rejected():
+def test_acceptance_rule_identical_predictions_rejected():
     y = np.array([0, 1] * 50); p = y.copy()
-    r = deployment_test(y, p, p, metric="wF1", K=2)
+    r = acceptance_rule(y, p, p, metric="wF1", K=2)
     assert not r.accept and r.gain == 0
 
 

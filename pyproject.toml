@@ -32,6 +32,11 @@ dependencies = [
     "torch>=2.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/DwiSunaryono/fde-tabular"
+Repository = "https://github.com/DwiSunaryono/fde-tabular"
+Issues = "https://github.com/DwiSunaryono/fde-tabular/issues"
+
 [project.optional-dependencies]
 test = ["pytest>=7"]
 

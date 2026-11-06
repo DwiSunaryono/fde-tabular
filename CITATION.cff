@@ -1,9 +1,19 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "Please cite this software as shown below."
 title: "FDE: Feasible Diverse Ensembles for tabular classification"
+abstract: >-
+  FDE builds a diverse ensemble around the best tuned single learner and keeps the ensemble only when a
+  cross-fitted acceptance rule shows, on the training data, that it beats that learner.
 authors:
   - family-names: Sunaryono
     given-names: Dwi
 version: 1.0.0
 license: MIT
+repository-code: "https://github.com/DwiSunaryono/fde-tabular"
+url: "https://github.com/DwiSunaryono/fde-tabular"
+keywords:
+  - ensemble learning
+  - class imbalance
+  - tabular classification
+  - stacking
 type: software

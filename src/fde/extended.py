@@ -1,21 +1,22 @@
-"""Extended members: large-budget GBDTs (with ordinal or native categorical coding), an MLP and large forests.
+"""Extended members: large-budget GBDTs (ordinal or native categorical coding), an MLP, and large forests.
 
-Each member is bagged over 3 stratified folds of its fit rows. A fold model is fitted on 2/3 of the rows; the GBDTs
-and the MLP stop early on the held 1/3 by log loss. The held-fold predictions are the member's out-of-fold
-probabilities (used by the combiner), and new rows get the mean of the fold models.
+Every member is bagged over 3 stratified folds of the rows it is fitted on; a class with fewer rows reduces the
+number of folds. A fold model is trained on every fold except one. The GBDTs and the MLP watch log loss on the fold
+they do not see and stop early. Those held-out predictions become the member's out-of-fold probabilities for the
+combiner, while new rows are scored by the mean of the fold models.
 
-  catn_cat   CatBoost, depth 6, native categories (text, missing as its own category)
-  big_lgbm   LightGBM, 63 leaves, subsample 0.8, ordinal-coded categories, median-imputed numbers
-  big_xgb    XGBoost, depth 6, subsample 0.8, same coding
-  catn_lgbm  LightGBM as big_lgbm with native categorical handling
-  catn_xgb   XGBoost as big_xgb with native categorical handling
-  nn_mlp     PyTorch MLP: numbers median-imputed and quantile-transformed to a normal distribution, categories one-hot
-             coded (seen at least 5 times, others grouped); 3 hidden layers of 256 units, ReLU, dropout 0.1; Adam
-             (learning rate 1e-3), batch 512, at most 200 epochs, patience 10
+  catn_cat   CatBoost, depth 6, categories kept as text, missing values treated as a category of their own
+  big_lgbm   LightGBM, 63 leaves, subsample 0.8, ordinal-coded categories, numbers median-imputed
+  big_xgb    XGBoost, depth 6, subsample 0.8, coded the same way
+  catn_lgbm  LightGBM as big_lgbm, but with native categorical handling
+  catn_xgb   XGBoost as big_xgb, but with native categorical handling
+  nn_mlp     PyTorch MLP: numbers median-imputed, then quantile-transformed to a normal distribution; categories
+             one-hot coded once they occur at least 5 times, rarer ones grouped; 3 hidden layers of 256 units with
+             ReLU and dropout 0.1; Adam (learning rate 1e-3), batch 512, at most 200 epochs, patience 10
   big_rf     random forest, 500 trees, sqrt(F) columns per split, ordinal-coded categories
   big_et     extra trees, same settings
-GBDTs: up to 5,000 trees, learning rate 0.05, early stopping after 100 rounds. Every encoder is fitted on the rows of
-its fold model only.
+GBDTs: at most 5,000 trees, learning rate 0.05, early stopping after 100 rounds. Each encoder is fitted on the rows
+of its own fold model only.
 """
 import numpy as np
 import pandas as pd
@@ -30,8 +31,8 @@ BAG_K = 3
 
 
 def raw_frame(X, cat=None):
-    """Columns renamed f0, f1, ... (LightGBM rejects some characters); non-numeric columns as text with missing
-    values as their own category. `cat` fixes the categorical columns found at fit time."""
+    """Columns renamed f0, f1, ... (LightGBM rejects some characters); non-numeric columns as text, with missing
+    values forming a category of their own. `cat` fixes the categorical columns found at fit time."""
     X = pd.DataFrame(X).reset_index(drop=True)
     X = X.set_axis([f"f{i}" for i in range(X.shape[1])], axis=1)
     if cat is None:
@@ -62,7 +63,7 @@ def _coder(Xf, cat, kind):
 
 
 class _Net:
-    """Fitted MLP with its input coder; predicts class probabilities."""
+    """Fitted MLP plus its input coder; predicts class probabilities."""
 
     def __init__(self, ct, net):
         self.ct, self.net = ct, net
@@ -104,7 +105,7 @@ def _mlp(A, ya, H, yh, K, seed, threads):
 
 
 class Bagged:
-    """One extended member: the fold models of its 3-fold bagging and their preprocessing."""
+    """One extended member: the fold models of its 3-fold bagging, with their preprocessing."""
 
     def __init__(self, kind, cat, K):
         self.kind, self.cat, self.K, self.parts = kind, cat, K, []
@@ -129,12 +130,12 @@ class Bagged:
         return _proba(m, self._prep(X, i), self.K, cls)
 
     def predict_proba(self, X):
-        """X: frame from raw_frame with the fit-time categorical columns."""
+        """X: a frame from raw_frame, carrying the categorical columns found at fit time."""
         return sum(self._one(i, X) for i in range(len(self.parts))) / len(self.parts)
 
 
 def fit_member(kind, Xf, yf, K, seed, cat, threads=4):
-    """Bagged member on rows (Xf, yf). Returns (out-of-fold probabilities, fitted member)."""
+    """Bagged member fitted on the rows (Xf, yf); returns (out-of-fold probabilities, fitted member)."""
     oof = np.zeros((len(yf), K)); mem = Bagged(kind, cat, K)
     cnt = np.bincount(yf); k = int(max(2, min(BAG_K, cnt[cnt > 0].min())))
     for a, h0 in StratifiedKFold(k, shuffle=True, random_state=seed).split(np.zeros(len(yf)), yf):
@@ -151,8 +152,9 @@ def fit_member(kind, Xf, yf, K, seed, cat, threads=4):
                 m = M(n_estimators=500, max_features="sqrt", n_jobs=threads, random_state=seed).fit(A, yf[a])
                 mem.parts.append((("ct", ct), m, None)); ph = np.zeros((len(H), K)); ph[:, m.classes_] = m.predict_proba(H); oof[h] = ph
             continue
-        # a class too small to reach the fitting part is left out of that fold model (labels re-coded 0..k-1); its
-        # held rows still get out-of-fold probabilities, but early stopping uses only rows of seen classes
+        # a class with too few rows for the fitting part is dropped from that fold model (labels re-coded to 0..k-1);
+        # its held-out rows still receive out-of-fold probabilities, but early stopping only sees rows of the classes
+        # that remained
         cls = np.unique(yf[a]); code = np.full(K, -1); code[cls] = np.arange(len(cls)); ya = code[yf[a]]
         h = h0[code[yf[h0]] >= 0]; yh = code[yf[h]]; cls = None if len(cls) == K else cls
         if kind == "catn_cat":

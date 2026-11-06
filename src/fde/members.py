@@ -1,17 +1,17 @@
-"""The best tuned learner and the ensemble members, built from one set of training rows.
+"""The best tuned learner and the ensemble members, all built from the same training rows.
 
-Best tuned learner: each of the twelve learner types is tuned with Optuna (TPE, 20 trials) on inner stratified
-3-fold out-of-fold predictions with the run metric; the type with the highest inner score is kept.
-Members (all columns):
-  cwc2_{type}   the five best other learner types (inner scores of the tuning), their tuned parameters, fitted with
-                balanced class weights (k-nearest neighbours and MLP unweighted)
+Best tuned learner: Optuna (TPE, 20 trials) tunes each of the twelve learner types against the run metric on inner
+stratified 3-fold out-of-fold predictions, and the type with the highest inner score wins. Above 3,000 rows, SVC is
+skipped (`svc_max_n`).
+Members (all of them use every column):
+  cwc2_{type}   the five next-best learner types (by inner score), with their tuned parameters and balanced class
+                weights (k-nearest neighbours and MLP get no weights)
   imb_{type}    BalancedRandomForest (300 trees), EasyEnsemble (10 estimators) and RUSBoost (100 estimators)
-  rbc2_{type}   the same five learner types, each fitted on all rows of the smallest class and at most twice as many
-                rows of every other class (undersampling bagging, one draw), with probabilities corrected to equal
+  rbc2_{type}   the same five learner types, each fitted on every row of the smallest class and on at most twice as
+                many rows of any other class (one random undersampling draw), with probabilities corrected to equal
                 class priors
-  c2_{type}     the same five learner types without any treatment of imbalance (only with members="all")
-For every member the inner out-of-fold probabilities (used to fit the combiner) and the model fitted on all rows
-are produced.
+  c2_{type}     the same five learner types with no imbalance treatment (FDEClassifier does not use them)
+Each member yields inner out-of-fold probabilities, which fit the combiner, and a model fitted on all rows.
 """
 import time
 
@@ -44,7 +44,7 @@ def member_oof(make, X, y, splits, K):
 
 
 class RBMember:
-    """Member fitted on a class-rebalanced sample; probabilities corrected to equal class priors."""
+    """Member fitted on a class-rebalanced sample; its probabilities are corrected to equal class priors."""
 
     def __init__(self, mt, params, mask, K, seed, ratio=RB_RATIO):
         self.mt, self.params, self.mask, self.K, self.seed, self.ratio = mt, params, mask, K, seed, ratio
@@ -79,7 +79,7 @@ class CWMember:
 
 
 def tune_best_learner(X, y, K, metric, seed, splits, trials=20, svc_max_n=3000, n_ref=0):
-    """Returns (type, params, inner score, {type: (inner score, params)}, tuning seconds per type)."""
+    """Returns (type, parameters, inner score, {type: (inner score, parameters)}, tuning seconds per type)."""
     cols, best, pool, tune = list(X.columns), None, {}, {}
     n = n_ref or len(y)
     for mt in [t for t in LEARNER_TYPES if not (t == "svc" and n > svc_max_n)]:
@@ -115,8 +115,8 @@ def recipes(X, K, seed, best_type, best_params, pool, families):
 
 
 def build(X, y, K, metric, seed, families, n_ref=0, trials=20, inner_folds=3, keep_models=False):
-    """Best tuned learner and members on rows (X, y): inner OOF probabilities (float32 values, as stored by the
-    study) and, when keep_models, the models fitted on all rows. Returns (oof dict, models dict, info)."""
+    """Best tuned learner and members on the rows (X, y): inner out-of-fold probabilities (float32 values, as stored
+    by the study) and, when keep_models, the models fitted on all rows. Returns (oof dict, models dict, info)."""
     splits = inner_splits(y, seed, inner_folds)
     mt, p, inner, pool, tune = tune_best_learner(X, y, K, metric, seed, splits, trials, n_ref=n_ref)
     cols = list(X.columns)

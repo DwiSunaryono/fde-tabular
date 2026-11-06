@@ -1,17 +1,18 @@
 """FDEClassifier: Feasible Diverse Ensemble.
 
 Procedure (the configuration evaluated in the accompanying paper):
-  1. Run metric: macro-F1 for two classes with a minority share below 0.15, otherwise weighted-F1.
-  2. The training rows are split into 3 stratified outer folds. On the fit rows of each fold, and on all rows, the best
-     tuned learner and the members are built: class-weighted, imbalance-specific and rebalanced members, and the
-     extended members of fde.extended (large-budget GBDTs, an MLP, large forests).
-  3. Combiner: stacking (multinomial logistic regression on the probabilities of the best learner and the members),
-     then per-class probability scales, fitted on out-of-fold probabilities.
-  4. Cross-fitted acceptance rule on the pooled outer-fold predictions: the ensemble is used only when the lower 5%
-     bootstrap bound of its gain over the best tuned learner is above 0, its weight in the all-rows fit is not zero,
-     and its predictions differ from the best learner's on at least one outer-fold row. Otherwise the best tuned
-     learner is kept. The same rule applies to every imbalance level.
-Option members="light" leaves out the extended members (step 2): a lighter and faster ensemble, somewhat less
+  1. Metric of a run: macro-F1 when there are two classes and the minority share is below 0.15, weighted-F1
+     otherwise.
+  2. The training rows are cut into 3 stratified outer folds. For each fold, on its fit rows, and once on all rows,
+     two things are built: the best tuned learner, and the members — class-weighted, imbalance-specific and
+     rebalanced ones, plus those of fde.extended (large-budget GBDTs, an MLP, large forests).
+  3. Combiner: stacking (multinomial logistic regression over the probabilities of the best learner and the
+     members) followed by per-class probability scales; both are fitted on out-of-fold probabilities.
+  4. Acceptance rule, cross-fitted over the pooled outer-fold predictions: the ensemble is used only if three
+     conditions hold — the lower 5% bootstrap quantile of its gain over the best tuned learner is above 0, its
+     weight in the all-rows fit is non-zero, and it differs from the best learner on at least one outer-fold row.
+     Otherwise the best tuned learner is kept. No imbalance level is treated differently.
+members="light" drops the extended members of step 2, which makes the ensemble lighter and faster but somewhat less
 accurate in the accompanying paper.
 """
 import json, os, time
@@ -23,13 +24,13 @@ from sklearn.model_selection import StratifiedKFold
 
 from . import __version__
 from .combiners import GRID_WIDE, apply, fast_score, fit_combiner
-from .deploy_test import OUTER_FOLDS, deployment_test, gate_metric
+from .deploy_test import OUTER_FOLDS, acceptance_rule, gate_metric
 from .extended import KINDS, fit_member, raw_frame
 from .learners import Member
 from .members import build
 
 FAMILIES = ("cwc2", "imb", "rbc2")
-MARGIN = 0.0                       # the ensemble is used when the lower bound of its gain is above 0
+MARGIN = 0.0                       # the ensemble is used when the lower bound of its gain lies above 0
 
 
 def imbalance_group(y):
@@ -38,8 +39,9 @@ def imbalance_group(y):
 
 
 def prepare_frame(X):
-    """Column names as strings; non-numeric columns as objects with NaN for missing values; numbers stored as text
-    converted to numbers. Categorical columns stay raw (each learner encodes them on its own training rows)."""
+    """Column names as strings, non-numeric columns as objects holding NaN for missing values, and numbers that
+    arrive as text converted to numbers. Categorical columns are left raw; each learner encodes them on its own
+    training rows."""
     X = pd.DataFrame(X).copy()
     X.columns = [str(c) for c in X.columns]
     for c in X.columns:
@@ -56,7 +58,7 @@ def prepare_frame(X):
 
 def _fitset(X, y, K, metric, seed, n_ref, trials, Xr, cat, threads, extended):
     oof, models, info = build(X, y, K, metric, seed, FAMILIES, n_ref=n_ref, trials=trials, keep_models=True)
-    for kind in KINDS if extended else ():              # extended members, on the raw frame
+    for kind in KINDS if extended else ():              # extended members work on the raw frame
         o, m = fit_member(kind, Xr, y, K, seed, cat, threads)
         oof[kind], models[kind] = o.astype(np.float32).astype(np.float64), m
     labs = sorted(l for l in oof if l != "P1")
@@ -70,15 +72,17 @@ def _probs(models, labs, X, Xr=None):
 
 
 class FDEClassifier:
-    """Feasible Diverse Ensemble for tabular classification (scikit-learn style).
+    """Feasible Diverse Ensemble for tabular classification, in scikit-learn style.
 
     Parameters
     ----------
-    random_state : int, seed of every split, search and member.
-    n_jobs : int, fit sets built in parallel (each tuned learner uses one thread).
-    trials : int, Optuna trials per learner type (20 in the evaluated configuration).
-    members : "full" (default) or "light" (imbalance-handling members only: lighter and faster).
-    member_threads : int, threads of each extended member (4 in the evaluated configuration).
+    random_state : int, seed shared by every split, search and member.
+    n_jobs : int, how many fit sets are built at the same time (each tuned learner is single-threaded).
+    trials : int, Optuna trials for each learner type (20 in the evaluated configuration).
+    members : "full" (default) or "light", the latter keeping only the imbalance-handling members: lighter and
+        faster.
+    member_threads : int, threads per extended member (4 in the evaluated configuration).
+    verbose : int, print the report once fitting ends when non-zero.
     """
 
     def __init__(self, random_state=0, n_jobs=4, trials=20, members="full", member_threads=4, verbose=0):
@@ -108,9 +112,9 @@ class FDEClassifier:
         for (i, j), r in zip(rounds, out[:3]):
             p = _probs(r["models"], r["labs"], sub(X, j), sub(Xr, j))
             cf_ref[j] = p["P1"].argmax(1); cf_cand[j] = apply(r["spec"], p).argmax(1)
-        test = deployment_test(y, cf_ref, cf_cand, metric=self.metric_, seed=0, K=K, margin=MARGIN)
+        rule = acceptance_rule(y, cf_ref, cf_cand, metric=self.metric_, seed=0, K=K, margin=MARGIN)
         full = out[3]
-        self.uses_ensemble_ = bool(test.accept and full["weight"] > 0 and np.any(cf_cand != cf_ref))
+        self.uses_ensemble_ = bool(rule.accept and full["weight"] > 0 and np.any(cf_cand != cf_ref))
         if self.uses_ensemble_:
             self.model_ = full
         else:
@@ -120,8 +124,8 @@ class FDEClassifier:
         self.report_ = {"version": __version__, "rows": len(y), "classes": [str(c) for c in self.classes_], "imbalance_ratio": round(ir, 3),
                         "imbalance_group": self.group_, "metric": self.metric_, "best_learner": info["best_type"],
                         "best_learner_inner_score": round(info["inner_score"], 5),
-                        "acceptance_rule": {"lower_bound": round(test.lower_bound, 5), "gain": round(test.gain, 5), "margin": MARGIN,
-                                            "accepted": bool(test.accept)},
+                        "acceptance_rule": {"lower_bound": round(rule.lower_bound, 5), "gain": round(rule.gain, 5), "margin": MARGIN,
+                                            "accepted": bool(rule.accept)},
                         "crossfit_scores": self.crossfit_,
                         "uses_ensemble": self.uses_ensemble_, "models_in_predictor": 1 + (len(self.model_["labs"]) if self.uses_ensemble_ else 0),
                         "options": {"members": self.members, "trials": self.trials, "member_threads": self.member_threads},

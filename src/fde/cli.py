@@ -1,9 +1,10 @@
 """Command line: fde fit | predict | evaluate.
 
-  fde fit --data train.csv --target y --out model.fde [--seed 0] [--jobs 4] [--members full|light]
+  fde fit --data train.csv --target y --out model.fde [--seed 0] [--jobs 4] [--trials 20] [--members full|light]
   fde predict --model model.fde --data new.csv [--proba] [--out predictions.csv]
-  fde evaluate --data data.csv --target y [--test-size 0.2] [--seed 0] ...   (stratified holdout; reports TEST scores
-              of FDE and of the best tuned learner in the run metric, macro-F1, weighted-F1 and balanced accuracy)
+  fde evaluate --data data.csv --target y [--test-size 0.2] [--seed 0] ...   (holds out a stratified part of the
+              data and scores FDE against the best tuned learner on it, reporting macro-F1, weighted-F1 and
+              balanced accuracy; the run metric is whichever F1 column applies)
 """
 import argparse, json, sys
 
@@ -29,16 +30,28 @@ def _scores(y, p):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="fde", description="Feasible Diverse Ensembles for tabular classification")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("fit", "evaluate"):
-        s = sub.add_parser(name); s.add_argument("--data", required=True); s.add_argument("--target", required=True)
-        s.add_argument("--seed", type=int, default=0); s.add_argument("--jobs", type=int, default=4); s.add_argument("--trials", type=int, default=20)
-        s.add_argument("--members", choices=("full", "light"), default="full")
+    for name, text in (("fit", "fit FDE and save the model"),
+                       ("evaluate", "fit on part of the data, then score the holdout")):
+        s = sub.add_parser(name, help=text, description=text)
+        s.add_argument("--data", required=True, help="input data (CSV or Parquet)")
+        s.add_argument("--target", required=True, help="column that holds the labels")
+        s.add_argument("--seed", type=int, default=0, help="seed shared by every split, search and member (default: 0)")
+        s.add_argument("--jobs", type=int, default=4, help="how many fit sets are built at the same time (default: 4)")
+        s.add_argument("--trials", type=int, default=20, help="Optuna trials for each learner type (default: 20)")
+        s.add_argument("--members", choices=("full", "light"), default="full",
+                       help="light keeps the imbalance-handling members only: faster, slightly less accurate "
+                            "(default: full)")
         if name == "fit":
-            s.add_argument("--out", required=True)
+            s.add_argument("--out", required=True, help="where to save the fitted model")
         else:
-            s.add_argument("--test-size", type=float, default=0.2)
-    s = sub.add_parser("predict"); s.add_argument("--model", required=True); s.add_argument("--data", required=True)
-    s.add_argument("--proba", action="store_true"); s.add_argument("--out", default=None)
+            s.add_argument("--test-size", type=float, default=0.2,
+                           help="fraction of rows held out, stratified by class (default: 0.2)")
+    s = sub.add_parser("predict", help="score new rows with a fitted model, as labels or probabilities",
+                       description="score new rows with a fitted model, as labels or probabilities")
+    s.add_argument("--model", required=True, help="model saved by fde fit")
+    s.add_argument("--data", required=True, help="input data (CSV or Parquet)")
+    s.add_argument("--proba", action="store_true", help="write class probabilities rather than labels")
+    s.add_argument("--out", default=None, help="CSV to write (default: standard output)")
     a = ap.parse_args(argv)
     if a.cmd == "fit":
         d = _read(a.data); clf = _clf(a).fit(d.drop(columns=[a.target]), d[a.target]); clf.save(a.out)

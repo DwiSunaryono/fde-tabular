@@ -1,30 +1,32 @@
-"""Cross-fitted acceptance rule: paired bootstrap lower bound of the gain, compared with a margin.
+"""Cross-fitted acceptance rule: a paired bootstrap lower bound on the gain, compared with a margin.
 
-The candidate replaces the reference model only when the lower 5% bootstrap quantile of its gain exceeds the
-margin. The gain is computed from the joint counts of (true label, reference prediction, candidate prediction) on
-the cross-fitted outer predictions, so a bootstrap replicate is a multinomial draw of those counts (Efron and
-Tibshirani 1993). Metrics: weighted-F1 and macro-F1 for two classes, weighted-F1 for more classes.
+The candidate takes over from the reference model only if the 5% quantile of the bootstrap distribution of its gain
+sits above the margin. Gains come from the joint counts of (true label, reference prediction, candidate prediction)
+over the cross-fitted outer predictions, which makes one bootstrap replicate a multinomial draw of those counts
+(Efron and Tibshirani 1993). With two classes both weighted-F1 and macro-F1 are available; with more classes only
+weighted-F1 is.
 """
 from dataclasses import dataclass
 
 import numpy as np
 
 MARGIN, QUANTILE, REPLICATES, OUTER_FOLDS = 0.005, 0.05, 20_000, 3
-CHUNK = 2500                       # multiclass replicates are drawn in chunks of this size
+CHUNK = 2500                       # multiclass replicates come in chunks of this size
 
 
 @dataclass(frozen=True)
-class TestResult:
+class AcceptanceResult:
+    """Outcome of the acceptance rule on one set of predictions."""
     accept: bool
     lower_bound: float
-    gain: float                    # gain on all rows (point estimate)
+    gain: float                    # gain over all rows (point estimate)
     n: int
     K: int
     metric: str
 
 
 def joint_counts(y, reference, candidate, K):
-    """K^3 counts of (y, reference, candidate), indexed by (y * K + reference) * K + candidate."""
+    """Counts of the K^3 (y, reference, candidate) combinations, indexed by (y * K + reference) * K + candidate."""
     y, r, c = (np.asarray(v, dtype=np.int64) for v in (y, reference, candidate))
     K = max(int(K), 2)
     return np.bincount((y * K + r) * K + c, minlength=K ** 3)
@@ -51,7 +53,7 @@ def _weighted_f1(M):
 
 
 def gain_from_counts(c, K, metric):
-    """Score of the candidate minus score of the reference; leading axes are vectorized."""
+    """Candidate score minus reference score; leading axes are vectorized."""
     c = np.asarray(c, dtype=float)
     if K == 2:
         t = c.reshape(c.shape[:-1] + (2, 2, 2))
@@ -63,7 +65,7 @@ def gain_from_counts(c, K, metric):
 
 
 def bootstrap_lower_bound(c, K, metric, seed=0, replicates=REPLICATES, quantile=QUANTILE):
-    """Lower bootstrap quantile of the gain; counts are resampled from a multinomial distribution."""
+    """Lower bootstrap quantile of the gain, with counts resampled from a multinomial distribution."""
     c = np.asarray(c); rng = np.random.default_rng(seed); n = int(c.sum())
     if K == 2:
         return float(np.quantile(gain_from_counts(rng.multinomial(n, c / n, size=replicates), 2, metric), quantile))
@@ -75,19 +77,20 @@ def bootstrap_lower_bound(c, K, metric, seed=0, replicates=REPLICATES, quantile=
     return float(np.quantile(np.concatenate(out), quantile))
 
 
-def deployment_test(y, pred_reference, pred_candidate, metric="wF1", K=None, seed=0, margin=MARGIN):
-    """Accept the candidate when the lower bootstrap bound of its gain over the reference exceeds the margin."""
+def acceptance_rule(y, pred_reference, pred_candidate, metric="wF1", K=None, seed=0, margin=MARGIN):
+    """Accept the candidate if the lower bootstrap bound of its gain over the reference clears the margin."""
     y, r, c = (np.asarray(v) for v in (y, pred_reference, pred_candidate))
     K = max(2, int(max(y.max(), r.max(), c.max())) + 1) if K is None else int(K)
     cnt = joint_counts(y, r, c, K); lb = bootstrap_lower_bound(cnt, K, metric, seed)
-    return TestResult(accept=lb > margin, lower_bound=lb, gain=float(gain_from_counts(cnt, K, metric)),
-                      n=len(y), K=K, metric=metric)
+    return AcceptanceResult(accept=lb > margin, lower_bound=lb, gain=float(gain_from_counts(cnt, K, metric)),
+                            n=len(y), K=K, metric=metric)
 
 
 MINORITY_IMBALANCED = 0.15
 
 
 def gate_metric(y):
-    """Metric of a run: macro-F1 for two classes with a minority share below 0.15, otherwise weighted-F1."""
+    """Metric for a run: macro-F1 when there are two classes and the minority share is below 0.15, weighted-F1
+    otherwise."""
     cnt = np.bincount(y)
     return "macroF1" if (len(cnt) == 2 and cnt.min() / cnt.sum() < MINORITY_IMBALANCED) else "wF1"
