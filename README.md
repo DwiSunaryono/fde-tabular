@@ -26,7 +26,7 @@ in every other case.
 
 ## Installation
 
-Python 3.10 or later. Installing into a fresh virtual environment keeps FDE apart from other projects. FDE runs on the
+Python 3.10 or later (check with `python3 --version`). Installing into a fresh virtual environment keeps FDE apart from other projects. FDE runs on the
 CPU by default, so the CPU build of PyTorch is enough and much smaller than the GPU build. Choose your system:
 
 <details open>
@@ -35,6 +35,7 @@ CPU by default, so the CPU build of PyTorch is enough and much smaller than the 
 ```bash
 python3 -m venv ~/fde-env
 source ~/fde-env/bin/activate
+pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install fde-tabular
 fde demo
@@ -48,16 +49,18 @@ If `python3 -m venv` reports that `ensurepip` is missing (Debian, Ubuntu), insta
 <summary><b>macOS</b></summary>
 
 ```bash
-brew install libomp
-python3 -m venv ~/fde-env
+brew install libomp python@3.12
+python3.12 -m venv ~/fde-env
 source ~/fde-env/bin/activate
+pip install --upgrade pip
 pip install torch
 pip install fde-tabular
 fde demo
 ```
 
-LightGBM and XGBoost need the OpenMP library (`libomp`) from Homebrew. On macOS the default PyTorch build already runs
-on the CPU.
+The `python3` that ships with macOS is Python 3.9, which is too old for FDE (pip then reports "No matching distribution
+found for fde-tabular"); the commands above use Python 3.12 from Homebrew. LightGBM and XGBoost need the OpenMP library
+(`libomp`). On macOS the default PyTorch build already runs on the CPU.
 </details>
 
 <details>
@@ -68,6 +71,7 @@ Type or paste **one line at a time** and press Enter after each line (if `py` is
 ```bat
 py -m venv %USERPROFILE%\fde-env
 %USERPROFILE%\fde-env\Scripts\activate
+python -m pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install fde-tabular
 fde demo
