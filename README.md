@@ -1,5 +1,7 @@
 # FDE: Feasible Diverse Ensembles for tabular classification
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23997869.svg)](https://doi.org/10.5281/zenodo.23997869)
+
 FDE wraps the best tuned single learner in a diverse ensemble and hands prediction to the ensemble only when the
 training data support it over that learner. When they do not, the best tuned learner is used on its own.
 
@@ -261,8 +263,10 @@ so prediction takes longer than with a single model.
 
 ## Citation
 
-Please cite the accompanying article if you use FDE; the full reference will be added once it is published. See
-`CITATION.cff`.
+Please cite the accompanying article if you use FDE; the full reference will be added once it is published. The
+software itself is archived on Zenodo: version 1.0.0 has DOI
+[10.5281/zenodo.23997869](https://doi.org/10.5281/zenodo.23997869), and
+[10.5281/zenodo.23997868](https://doi.org/10.5281/zenodo.23997868) always points to the latest version. See `CITATION.cff`.
 
 ## License
 
