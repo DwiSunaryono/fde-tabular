@@ -36,40 +36,52 @@ METRIC = {"wF1": "weighted-F1", "macroF1": "macro-F1"}
 
 
 def _summary(r, test=None, n_test=None, saved=None):
-    """Readable result: data, best learner, acceptance rule, model, time, and the held-out scores when given."""
-    o = r["options"]
-    lines = ["", "FDE result",
-             f"  Data           {r['rows']} training rows, {len(r['classes'])} classes ({', '.join(r['classes'][:6])}"
-             f"{', ...' if len(r['classes']) > 6 else ''}), " + ("balanced" if r["imbalance_group"] == "balanced" else f"{r['imbalance_group']} imbalance")
-             + f" (ratio {r['imbalance_ratio']:.1f})",
-             f"  Best learner   {NAMES.get(r['best_learner'], r['best_learner'])} (inner {METRIC[r['metric']]} {r['best_learner_inner_score']:.4f})",
-             ("  Ensemble       used" if r["uses_ensemble"] else "  Ensemble       not needed; the best tuned learner is the model"),
-             f"  Model          {r['models_in_predictor']} model{'s' if r['models_in_predictor'] > 1 else ''} "
-             f"({'best learner, members and combiner' if r['uses_ensemble'] else 'the best tuned learner alone'})",
-             f"  Fit time       {r['fit_seconds']:.0f} s ({o['trials']} trials, {o['members']} members, {o['device'].upper()})"]
-    if saved:
-        lines.append(f"  Saved to       {saved}")
-    lines += ["", "  Why"] + ["    " + x for x in _why(r)]
-    lines += ["", f"  How {'it was evaluated' if test else 'the model was chosen'} (no row is used both to choose a model and to score it)"]
-    step = 1
+    """Readable result on stdout: the decision and the held-out scores first (highlighted), then the details, the
+    reasons and how the data were split. Plain text when stdout is not a terminal."""
+    from rich import box
+    from rich.console import Console, Group
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    con, o, used = Console(highlight=False), r["options"], r["uses_ensemble"]
+    n = r["models_in_predictor"]
+    head = (Text(f"Ensemble used ({n} models: best learner, members and combiner)", style="bold green") if used else
+            Text("Best tuned learner kept (one model; the ensemble was not needed)", style="bold cyan"))
+    parts = [head]
     if test:
-        lines.append(f"    {step}. {n_test} rows were set aside before fitting and used only for the held-out scores below.")
-        step += 1
-    lines += [f"    {step}. On the training rows, 3 outer folds decided whether the ensemble is used, judged on rows",
-              "       that each fold's models had not seen.",
-              f"    {step + 1}. Inside every fold, the learners were tuned and the combiner fitted on 3 inner folds; every",
-              "       imputer, encoder and scaler was fitted on its own training rows only."]
-    if test:
-        lines += ["", f"  {'Held-out rows (' + str(n_test) + ')':24s} {'FDE':>8s} {'best tuned learner':>20s}"]
+        t = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold")
+        t.add_column(f"held-out rows ({n_test})"); t.add_column("FDE", justify="right"); t.add_column("best tuned learner", justify="right")
         for k, lab in (("macro_f1", "macro-F1"), ("weighted_f1", "weighted-F1"), ("balanced_accuracy", "balanced accuracy")):
-            lines.append(f"    {lab:22s} {test['fde'][k]:8.4f} {test['best_tuned_learner'][k]:20.4f}")
-        lines.append("  FDE kept the best tuned learner, so both columns are the same." if not r["uses_ensemble"] else
-                     "  FDE used the ensemble; the second column shows the best tuned learner alone.")
-        lines += ["  To compare with another tool, score it on the same held-out rows; scores computed on rows that",
-                  "  were also used for tuning come out higher than they will be on new data."]
-    if not test:
-        lines += ["  To see how the model does on new data, use `fde evaluate` or score your own held-out rows."]
-    print("\n".join(lines) + "\n")
+            a, b = test["fde"][k], test["best_tuned_learner"][k]
+            t.add_row(lab, Text(f"{a:.4f}", style="bold green" if a > b else ""), Text(f"{b:.4f}", style="bold green" if b > a else ""))
+        parts += [Text(""), t, Text("FDE kept the best tuned learner, so both columns are the same." if not used else
+                                    "Higher scores are in green.", style="dim")]
+    con.print(); con.print(Panel(Group(*parts), title="[bold]FDE result[/]", border_style="green" if used else "cyan", expand=False))
+    g = Table.grid(padding=(0, 2)); g.add_column(style="bold"); g.add_column()
+    cls = ", ".join(r["classes"][:6]) + (", ..." if len(r["classes"]) > 6 else "")
+    imb = "balanced" if r["imbalance_group"] == "balanced" else f"{r['imbalance_group']} imbalance"
+    g.add_row("Data", f"{r['rows']} training rows, {len(r['classes'])} classes ({cls}), {imb} (ratio {r['imbalance_ratio']:.1f})")
+    g.add_row("Best learner", f"{NAMES.get(r['best_learner'], r['best_learner'])} (inner {METRIC[r['metric']]} {r['best_learner_inner_score']:.4f})")
+    g.add_row("Fit time", f"{r['fit_seconds']:.0f} s ({o['trials']} trials, {o['members']} members, {o['device'].upper()})")
+    if saved:
+        g.add_row("Saved to", saved)
+    g.add_row("Why", _why(r))
+    con.print(g)
+    steps = ([f"{n_test} rows were set aside before fitting and used only for the held-out scores."] if test else []) + [
+        "On the training rows, 3 outer folds decided whether the ensemble is used, judged on rows that each fold's "
+        "models had not seen.",
+        "Inside every fold, the learners were tuned and the combiner fitted on 3 inner folds; every imputer, encoder "
+        "and scaler was fitted on its own training rows only."]
+    con.print(f"\n[bold]How {'it was evaluated' if test else 'the model was chosen'}[/] [dim](no row is used both to choose a model and to score it)[/]")
+    from rich.padding import Padding
+    lst = Table.grid(padding=(0, 1)); lst.add_column(justify="right", style="dim"); lst.add_column(style="dim")
+    for i, x in enumerate(steps, 1):
+        lst.add_row(f"{i}.", x)
+    lst.add_row("", "To compare with another tool, score it on the same held-out rows; scores computed on rows that were "
+                    "also used for tuning come out higher than they will be on new data." if test else
+                    "To see how the model does on new data, use `fde evaluate` or score your own held-out rows.")
+    con.print(Padding(lst, (0, 0, 0, 2)))
+    con.print()
 
 
 # share of runs that used the ensemble in the accompanying study (53 datasets x 5 seeds), by imbalance group
@@ -77,11 +89,6 @@ STUDY = {"balanced": 8, "low": 54, "moderate": 83, "extreme": 83}
 GROUP = {"balanced": "balanced data (imbalance ratio below 3)", "low": "data with low imbalance (ratio 3 to 10)",
          "moderate": "data with moderate to extreme imbalance (ratio 10 or more)",
          "extreme": "data with moderate to extreme imbalance (ratio 10 or more)"}
-
-
-def _wrap(text, width=96):
-    import textwrap
-    return textwrap.wrap(text, width)
 
 
 def _why(r):
@@ -106,7 +113,7 @@ def _why(r):
         why = " The combiner gave the members no weight, so FDE keeps the single model."
     ctx = (f" For comparison: in the accompanying study (full member set), the ensemble was used in "
            f"{STUDY[r['imbalance_group']]}% of runs on {GROUP[r['imbalance_group']]}.")
-    return _wrap(seen + why + ctx)
+    return seen + why + ctx
 
 
 def _evaluate(X, y, a):
@@ -167,7 +174,7 @@ def main(argv=None):
     s.add_argument("--out", default=None, help="CSV to write (default: standard output)")
     a = ap.parse_args(argv)
     if a.cmd in ("demo", "fit", "evaluate") and not a.quiet:
-        print("[fde] loading the learner libraries (a few seconds on the first run) ...", file=sys.stderr, flush=True)
+        print("fde loading the learner libraries (a few seconds on the first run) ...", file=sys.stderr, flush=True)
     if a.cmd == "fit":
         d = _read(a.data); clf = _clf(a).fit(d.drop(columns=[a.target]), d[a.target]); clf.save(a.out)
         if a.json:
@@ -197,7 +204,9 @@ def main(argv=None):
                                          flip_y=0.02, class_sep=0.8, random_state=1)
             X, y = pd.DataFrame(Xa, columns=[f"x{i}" for i in range(20)]), np.where(ya == 1, "minority", "majority")
             what = "synthetic imbalanced data (2,000 rows, 20 columns, 10% minority class)"
-        _ = a.quiet or print(f"[fde] demo: {what}; {quick}", file=sys.stderr, flush=True)
+        if not a.quiet:
+            from rich.console import Console
+            Console(stderr=True, highlight=False).print(f"[bold cyan]fde[/] demo: {what}; [dim]{quick}[/]")
         _evaluate(X, y, a)
     else:
         d = _read(a.data); _evaluate(d.drop(columns=[a.target]), d[a.target], a)

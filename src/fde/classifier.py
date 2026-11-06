@@ -56,42 +56,16 @@ def prepare_frame(X):
     return X.reset_index(drop=True)
 
 
-class _Bar:
-    """One-line progress bar on stderr (shown on a terminal only): stage, bar, tasks done, elapsed and remaining time,
-    and the task that finished last."""
+def console():
+    """Rich console on stderr for progress and messages (plain text when stderr is not a terminal)."""
+    from rich.console import Console
+    return Console(stderr=True, highlight=False)
 
-    def __init__(self, total, stage, on, work=None):
-        self.total, self.stage, self.done, self.t0, self.what = max(total, 1), stage, 0, time.time(), "starting"
-        self.work, self.got = max(work or total, 1e-9), 0.0
-        self.on = on and sys.stderr.isatty()
-        if self.on:                                      # redraw twice a second, so that the clock keeps moving
-            import threading
-            self.stop = threading.Event()
-            threading.Thread(target=self._tick, daemon=True).start()
 
-    def _tick(self):
-        while not self.stop.wait(0.5):
-            self.draw()
-
-    def step(self, what, weight=1.0):
-        self.done = min(self.done + 1, self.total); self.got += weight; self.what = what; self.draw()
-
-    def draw(self):
-        if not self.on:
-            return
-        el = time.time() - self.t0; frac = min(self.got / self.work, 1.0); w = 24
-        rem = max(el / frac - el, 0) if frac > 0 else 0
-        fmt = lambda t: f"{int(t // 60)}:{int(t % 60):02d}"
-        bar = "#" * int(w * frac) + "-" * (w - int(w * frac))
-        sys.stderr.write(f"\r{self.stage} [{bar}] {self.done}/{self.total} {100 * frac:3.0f}%  elapsed {fmt(el)}  "
-                         f"remaining ~{fmt(rem)}  {self.what[:28]:28s}")
-        sys.stderr.flush()
-
-    def close(self, say):
-        if self.on:
-            self.stop.set()
-            sys.stderr.write("\r" + " " * 125 + "\r")
-        say(f"{self.stage}: {self.total} tasks in {time.time() - self.t0:.0f} s")
+def _say(con, verbose):
+    from rich.markup import escape
+    return (lambda msg, style="": con.print(f"[bold cyan]fde[/] " + (f"[{style}]{escape(msg)}[/]" if style else escape(msg)))) \
+        if verbose else (lambda msg, style="": None)
 
 
 def plan_jobs(n_jobs, X):
@@ -136,18 +110,25 @@ def _weight(key):
     return float(COST.get(key[-1] if isinstance(key, tuple) else key, 1))
 
 
-def _run(tasks, n_jobs, stage, verbose, say, dev="cpu"):
-    """Runs {key: (fn, args, label)} on n_jobs processes, slow tasks first; returns {key: result}."""
+def _run(tasks, n_jobs, stage, verbose, say, dev="cpu", con=None):
+    """Runs {key: (fn, args, label)} on n_jobs processes, slow tasks first, with a progress bar; returns {key: result}."""
     from joblib import Parallel, delayed
-    order = sorted(tasks, key=_weight, reverse=True)
-    bar, out = _Bar(len(tasks), stage, verbose, sum(_weight(k) for k in order)), {}
-    for key, r in Parallel(n_jobs=n_jobs, backend="loky", return_as="generator_unordered")(
-            delayed(_call)(key, tasks[key][0], tasks[key][1], dev) for key in order):
-        out[key] = r; left = [k for k in order if k not in out]
-        names = sorted({str(k[-1]) if isinstance(k, tuple) else str(k) for k in left})
-        bar.step(f"{len(left)} left: {', '.join(names)}" if left else "finishing", _weight(key))
-    if verbose:
-        bar.close(say)
+    from rich.progress import (BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn,
+                               TimeRemainingColumn)
+    order = sorted(tasks, key=_weight, reverse=True); out, t0 = {}, time.time()
+    cols = (SpinnerColumn("line", style="cyan"), TextColumn("[bold]{task.description}"),
+            BarColumn(bar_width=28, style="grey35", complete_style="magenta", finished_style="green"),
+            TaskProgressColumn(), TextColumn("{task.fields[n]}"), TextColumn("[dim]elapsed[/]"), TimeElapsedColumn(),
+            TextColumn("[dim]left ~[/]"), TimeRemainingColumn(), TextColumn("[dim]{task.fields[what]}"))
+    with Progress(*cols, console=con or console(), transient=True, disable=not verbose) as prog:
+        bar = prog.add_task(stage, total=sum(_weight(k) for k in order), n=f"0/{len(order)}", what="starting")
+        for key, r in Parallel(n_jobs=n_jobs, backend="loky", return_as="generator_unordered")(
+                delayed(_call)(key, tasks[key][0], tasks[key][1], dev) for key in order):
+            out[key] = r; left = [k for k in order if k not in out]
+            names = sorted({str(k[-1]) if isinstance(k, tuple) else str(k) for k in left})
+            prog.update(bar, advance=_weight(key), n=f"{len(out)}/{len(order)}",
+                        what=(f"{len(left)} left: {', '.join(names)}" if left else "finishing")[:40])
+    say(f"{stage}: {len(order)} tasks in {time.time() - t0:.0f} s", "green")
     return out
 
 
@@ -195,9 +176,9 @@ class FDEClassifier:
         sub = lambda D, i: D.iloc[i].reset_index(drop=True)
         sets = [(sub(X, i), y[i], sub(Xr, i)) for i, _ in rounds] + [(X, y, Xr)]
         names = [f"fold {k + 1}/3" for k in range(3)] + ["all rows"]
-        say = (lambda msg: print(f"[fde] {msg}", file=sys.stderr, flush=True)) if self.verbose else (lambda msg: None)
+        con = console(); say = _say(con, self.verbose)
         say(f"{len(y)} rows, {K} classes, metric {self.metric_}, members: {self.members}")
-        say("checking the system ...")
+        say("checking the system ...", "dim")
         jobs, machine = plan_jobs(self.n_jobs, X)
         say(f"  CPU and memory: {machine}")
         self.device_used_, gpu_line = gpu_note(self.device)
@@ -206,7 +187,7 @@ class FDEClassifier:
         types = tuned_types(len(y))
         # stage 1: every learner type in every fit set is tuned as its own task
         tuned = _run({(k, mt): (tune_one, (Xf, yf, K, self.metric_, seed, splits[k], self.trials, mt), f"{names[k]}: {mt}")
-                      for k, (Xf, yf, _) in enumerate(sets) for mt in types}, jobs, "Stage 1/3 Tuning learners", self.verbose, say, self.device_used_)
+                      for k, (Xf, yf, _) in enumerate(sets) for mt in types}, jobs, "Stage 1/3 Tuning learners", self.verbose, say, self.device_used_, con)
         # stage 2: the best learner and every member of every fit set, each as its own task
         best, tasks = [], {}
         for k, (Xf, yf, Xrf) in enumerate(sets):
@@ -220,14 +201,14 @@ class FDEClassifier:
                 tasks[(k, lab)] = (member_task, (make, Xf, yf, splits[k], K, True), f"{names[k]}: {lab}")
             for kind in KINDS if self.members == "full" else ():
                 tasks[(k, kind)] = (fit_member, (kind, Xrf, yf, K, seed, self.cat_, self.member_threads), f"{names[k]}: {kind}")
-        built = _run(tasks, jobs, "Stage 2/3 Building members", self.verbose, say, self.device_used_)
+        built = _run(tasks, jobs, "Stage 2/3 Building members", self.verbose, say, self.device_used_, con)
         oofs, models = [{} for _ in sets], [{} for _ in sets]
         for (k, lab), (o, m) in built.items():
             oofs[k][lab] = o.astype(np.float32).astype(np.float64); models[k][lab] = m
         # stage 3: the combiner of every fit set
         labs = [sorted(l for l in oofs[k] if l != "P1") for k in range(4)]
         comb = _run({k: (fit_combiner, ("stack_scaled", oofs[k], labs[k], sets[k][1], K, self.metric_, seed, GRID_WIDE), names[k])
-                     for k in range(4)}, jobs, "Stage 3/3 Combiners", self.verbose, say)
+                     for k in range(4)}, jobs, "Stage 3/3 Combiners", self.verbose, say, "cpu", con)
         out = [{"models": models[k], "spec": comb[k][0], "weight": comb[k][2], "info": best[k], "labs": labs[k]} for k in range(4)]
         cf_ref, cf_cand = np.zeros(len(y), int), np.zeros(len(y), int)
         for (i, j), r in zip(rounds, out[:3]):
@@ -243,10 +224,11 @@ class FDEClassifier:
         else:
             self.model_ = {"models": {"P1": full["models"]["P1"]}, "spec": {"kind": "best"}, "labs": [], "info": full["info"]}
         self.crossfit_ = {"reference": fast_score(y, cf_ref, K, self.metric_), "ensemble": fast_score(y, cf_cand, K, self.metric_)}
-        say(("Acceptance rule: the ensemble predicted better on the training folds, so it is used "
-             f"({1 + len(full['labs'])} models)") if self.uses_ensemble_ else
-            "Acceptance rule: the best tuned learner alone was as good on the training folds, so it is kept (one model)")
-        say(f"Done in {time.time() - t0:.0f} s")
+        if self.uses_ensemble_:
+            say(f"Acceptance rule: the ensemble predicted better on the training folds, so it is used ({1 + len(full['labs'])} models)", "bold green")
+        else:
+            say("Acceptance rule: the best tuned learner alone was as good on the training folds, so it is kept (one model)", "bold cyan")
+        say(f"Done in {time.time() - t0:.0f} s", "bold green")
         info = self.model_["info"]
         self.report_ = {"version": __version__, "rows": len(y), "classes": [str(c) for c in self.classes_], "imbalance_ratio": round(ir, 3),
                         "imbalance_group": self.group_, "metric": self.metric_, "best_learner": info["best_type"],
