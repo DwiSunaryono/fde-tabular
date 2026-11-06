@@ -7,6 +7,19 @@ abstract: >-
 authors:
   - family-names: Sunaryono
     given-names: Dwi
+    affiliation: "Department of Informatics, Institut Teknologi Sepuluh Nopember, Surabaya, Indonesia"
+  - family-names: Subakti
+    given-names: Misbakhul Munir Irfan
+    affiliation: "Department of Informatics, Institut Teknologi Sepuluh Nopember, Surabaya, Indonesia"
+  - family-names: Suciningtyas
+    given-names: Laras
+    affiliation: "Department of Electrical Engineering, Institut Teknologi Sepuluh Nopember, Surabaya, Indonesia"
+  - family-names: Sabilla
+    given-names: Irzal Ahmad
+    affiliation: "Department of Information Technology, Institut Teknologi Sepuluh Nopember, Surabaya, Indonesia"
+  - family-names: Kurniawan
+    given-names: Muchamad
+    affiliation: "Department of Informatics, Institut Teknologi Adhi Tama Surabaya, Surabaya, Indonesia"
 version: 1.0.0
 license: MIT
 repository-code: "https://github.com/DwiSunaryono/fde-tabular"

@@ -9,7 +9,8 @@ description = "FDE: Feasible Diverse Ensembles for tabular classification"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Dwi Sunaryono" }]
+authors = [{ name = "Dwi Sunaryono" }, { name = "Misbakhul Munir Irfan Subakti" }, { name = "Laras Suciningtyas" },
+           { name = "Irzal Ahmad Sabilla" }, { name = "Muchamad Kurniawan" }]
 requires-python = ">=3.10"
 keywords = ["ensemble learning", "class imbalance", "tabular data", "classification", "stacking"]
 classifiers = [
