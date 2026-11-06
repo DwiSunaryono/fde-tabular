@@ -40,16 +40,16 @@ def _summary(r, test=None, n_test=None, saved=None):
     o = r["options"]
     lines = ["", "FDE result",
              f"  Data           {r['rows']} training rows, {len(r['classes'])} classes ({', '.join(r['classes'][:6])}"
-             f"{', ...' if len(r['classes']) > 6 else ''}), {r['imbalance_group']} (imbalance ratio {r['imbalance_ratio']:.1f})",
+             f"{', ...' if len(r['classes']) > 6 else ''}), " + ("balanced" if r["imbalance_group"] == "balanced" else f"{r['imbalance_group']} imbalance")
+             + f" (ratio {r['imbalance_ratio']:.1f})",
              f"  Best learner   {NAMES.get(r['best_learner'], r['best_learner'])} (inner {METRIC[r['metric']]} {r['best_learner_inner_score']:.4f})",
-             ("  Ensemble       used: it predicted better than the best tuned learner on the training folds"
-              if r["uses_ensemble"] else
-              "  Ensemble       not needed: the best tuned learner alone was as good on the training folds"),
+             ("  Ensemble       used" if r["uses_ensemble"] else "  Ensemble       not needed; the best tuned learner is the model"),
              f"  Model          {r['models_in_predictor']} model{'s' if r['models_in_predictor'] > 1 else ''} "
              f"({'best learner, members and combiner' if r['uses_ensemble'] else 'the best tuned learner alone'})",
              f"  Fit time       {r['fit_seconds']:.0f} s ({o['trials']} trials, {o['members']} members, {o['device'].upper()})"]
     if saved:
         lines.append(f"  Saved to       {saved}")
+    lines += ["", "  Why"] + ["    " + x for x in _why(r)]
     lines += ["", f"  How {'it was evaluated' if test else 'the model was chosen'} (no row is used both to choose a model and to score it)"]
     step = 1
     if test:
@@ -70,6 +70,43 @@ def _summary(r, test=None, n_test=None, saved=None):
     if not test:
         lines += ["  To see how the model does on new data, use `fde evaluate` or score your own held-out rows."]
     print("\n".join(lines) + "\n")
+
+
+# share of runs that used the ensemble in the accompanying study (53 datasets x 5 seeds), by imbalance group
+STUDY = {"balanced": 8, "low": 54, "moderate": 83, "extreme": 83}
+GROUP = {"balanced": "balanced data (imbalance ratio below 3)", "low": "data with low imbalance (ratio 3 to 10)",
+         "moderate": "data with moderate to extreme imbalance (ratio 10 or more)",
+         "extreme": "data with moderate to extreme imbalance (ratio 10 or more)"}
+
+
+def _wrap(text, width=96):
+    import textwrap
+    return textwrap.wrap(text, width)
+
+
+def _why(r):
+    """Plain-language reasons for the decision, from the cross-fitted scores of the training folds."""
+    cf, m = r["crossfit_scores"], METRIC[r["metric"]]
+    ref, ens, d = cf["reference"], cf["ensemble"], r.get("decision")
+    seen = (f"On training rows that each fold's models had not seen, the ensemble scored {ens:.4f} and the best tuned "
+            f"learner {ref:.4f} ({m}).")
+    if d == "used":
+        why = (" The ensemble was better, and its advantage held in at least 95% of the bootstrap resamples of those rows, "
+               "so FDE uses it. Its members (learners refitted with class weights, on rebalanced samples, and "
+               "imbalance-specific ensembles" + (", plus large-budget GBDTs, an MLP and large forests" if r["options"]["members"] == "full" else "")
+               + ") correct some of the errors of the best tuned learner.")
+    elif d == "not_consistent" and ens > ref:
+        why = (" The ensemble scored a little higher, but the advantage did not hold in at least 95% of the bootstrap "
+               "resamples, so it may be chance. FDE keeps the single model, which is simpler and faster to predict.")
+    elif d == "not_consistent":
+        why = (" The ensemble was not better, so FDE keeps the single model, which is simpler and faster to predict.")
+    elif d == "same_predictions":
+        why = " The ensemble made the same predictions as the best tuned learner, so FDE keeps the single model."
+    else:
+        why = " The combiner gave the members no weight, so FDE keeps the single model."
+    ctx = (f" For comparison: in the accompanying study (full member set), the ensemble was used in "
+           f"{STUDY[r['imbalance_group']]}% of runs on {GROUP[r['imbalance_group']]}.")
+    return _wrap(seen + why + ctx)
 
 
 def _evaluate(X, y, a):
@@ -116,9 +153,11 @@ def main(argv=None):
         else:
             s.add_argument("--test-size", type=float, default=0.2,
                            help="fraction of rows held out, stratified by class (default: 0.2)")
-    text = ("evaluate FDE on the breast cancer data shipped with scikit-learn (no file or download needed); quick "
-            "settings by default (5 trials, light members)")
+    text = ("evaluate FDE on example data, no file or download needed; quick settings by default (5 trials, light "
+            "members). --example breast-cancer: the best tuned learner is enough; --example imbalanced: the ensemble is used")
     s = sub.add_parser("demo", help=text, description=text); _common(s, trials=5, members="light")
+    s.add_argument("--example", choices=("breast-cancer", "imbalanced"), default="breast-cancer",
+                   help="breast-cancer: 569 rows, balanced classes; imbalanced: 2,000 synthetic rows, 10%% minority (default: breast-cancer)")
     s.add_argument("--test-size", type=float, default=0.2, help="fraction of rows held out, stratified by class (default: 0.2)")
     s = sub.add_parser("predict", help="score new rows with a fitted model, as labels or probabilities",
                        description="score new rows with a fitted model, as labels or probabilities")
@@ -145,11 +184,21 @@ def main(argv=None):
         else:
             out.to_csv(sys.stdout, index=False)
     elif a.cmd == "demo":
-        from sklearn.datasets import load_breast_cancer
-        d = load_breast_cancer(as_frame=True)
-        _ = a.quiet or print(f"[fde] demo: breast cancer data (569 rows, 30 columns, 2 classes); quick settings: {a.trials} trials, "
-              f"{a.members} members (the paper's settings: --trials 20 --members full)", file=sys.stderr, flush=True)
-        _evaluate(d.data, d.target.map(dict(enumerate(d.target_names))), a)
+        quick = f"quick settings: {a.trials} trials, {a.members} members (the paper's settings: --trials 20 --members full)"
+        if a.example == "breast-cancer":
+            from sklearn.datasets import load_breast_cancer
+            d = load_breast_cancer(as_frame=True); X, y = d.data, d.target.map(dict(enumerate(d.target_names)))
+            what = "breast cancer data (569 rows, 30 columns, 2 balanced classes)"
+        else:
+            import numpy as np
+            import pandas as pd
+            from sklearn.datasets import make_classification
+            Xa, ya = make_classification(n_samples=2000, n_features=20, n_informative=6, n_redundant=4, weights=[0.9, 0.1],
+                                         flip_y=0.02, class_sep=0.8, random_state=1)
+            X, y = pd.DataFrame(Xa, columns=[f"x{i}" for i in range(20)]), np.where(ya == 1, "minority", "majority")
+            what = "synthetic imbalanced data (2,000 rows, 20 columns, 10% minority class)"
+        _ = a.quiet or print(f"[fde] demo: {what}; {quick}", file=sys.stderr, flush=True)
+        _evaluate(X, y, a)
     else:
         d = _read(a.data); _evaluate(d.drop(columns=[a.target]), d[a.target], a)
 

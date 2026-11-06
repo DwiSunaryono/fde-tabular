@@ -43,10 +43,12 @@ pip install fde-tabular
 ## Quick start
 
 ```bash
-fde demo
+fde demo                          # breast cancer data: the best tuned learner alone is enough
+fde demo --example imbalanced     # synthetic imbalanced data: the ensemble is used
 ```
 
-This evaluates FDE on the breast cancer data that ships with scikit-learn (no file or download needed). The demo uses
+The first demo evaluates FDE on the breast cancer data that ships with scikit-learn, the second on synthetic data with a
+10% minority class (no file or download needed for either). The summary explains why the ensemble was used or not. The demos use
 quick settings (5 Optuna trials per learner type and the light member set), so it finishes in about a minute on a
 laptop; `fde demo --trials 20 --members full` runs the settings evaluated in the paper. A progress bar shows the
 stage, the elapsed time and an estimate of the remaining time, and the result compares FDE with the best tuned

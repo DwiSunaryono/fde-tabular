@@ -236,6 +236,8 @@ class FDEClassifier:
         rule = acceptance_rule(y, cf_ref, cf_cand, metric=self.metric_, seed=0, K=K, margin=MARGIN)
         full = out[3]
         self.uses_ensemble_ = bool(rule.accept and full["weight"] > 0 and np.any(cf_cand != cf_ref))
+        self.decision_ = ("used" if self.uses_ensemble_ else "not_consistent" if not rule.accept
+                          else "same_predictions" if not np.any(cf_cand != cf_ref) else "no_member_weight")
         if self.uses_ensemble_:
             self.model_ = full
         else:
@@ -251,7 +253,7 @@ class FDEClassifier:
                         "best_learner_inner_score": round(info["inner_score"], 5),
                         "acceptance_rule": {"lower_bound": round(rule.lower_bound, 5), "gain": round(rule.gain, 5), "margin": MARGIN,
                                             "accepted": bool(rule.accept)},
-                        "crossfit_scores": self.crossfit_,
+                        "crossfit_scores": self.crossfit_, "decision": self.decision_,
                         "uses_ensemble": self.uses_ensemble_, "models_in_predictor": 1 + (len(self.model_["labs"]) if self.uses_ensemble_ else 0),
                         "options": {"members": self.members, "trials": self.trials, "member_threads": self.member_threads,
                                     "device": self.device_used_},
