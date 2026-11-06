@@ -61,9 +61,17 @@ class _Bar:
     and the task that finished last."""
 
     def __init__(self, total, stage, on, work=None):
-        self.total, self.stage, self.done, self.t0, self.what = max(total, 1), stage, 0, time.time(), ""
+        self.total, self.stage, self.done, self.t0, self.what = max(total, 1), stage, 0, time.time(), "starting"
         self.work, self.got = max(work or total, 1e-9), 0.0
         self.on = on and sys.stderr.isatty()
+        if self.on:                                      # redraw twice a second, so that the clock keeps moving
+            import threading
+            self.stop = threading.Event()
+            threading.Thread(target=self._tick, daemon=True).start()
+
+    def _tick(self):
+        while not self.stop.wait(0.5):
+            self.draw()
 
     def step(self, what, weight=1.0):
         self.done = min(self.done + 1, self.total); self.got += weight; self.what = what; self.draw()
@@ -72,7 +80,7 @@ class _Bar:
         if not self.on:
             return
         el = time.time() - self.t0; frac = min(self.got / self.work, 1.0); w = 24
-        rem = el / frac - el if frac > 0 else 0
+        rem = max(el / frac - el, 0) if frac > 0 else 0
         fmt = lambda t: f"{int(t // 60)}:{int(t % 60):02d}"
         bar = "#" * int(w * frac) + "-" * (w - int(w * frac))
         sys.stderr.write(f"\r{self.stage} [{bar}] {self.done}/{self.total} {100 * frac:3.0f}%  elapsed {fmt(el)}  "
@@ -81,6 +89,7 @@ class _Bar:
 
     def close(self, say):
         if self.on:
+            self.stop.set()
             sys.stderr.write("\r" + " " * 125 + "\r")
         say(f"{self.stage}: {self.total} tasks in {time.time() - self.t0:.0f} s")
 
@@ -134,7 +143,9 @@ def _run(tasks, n_jobs, stage, verbose, say, dev="cpu"):
     bar, out = _Bar(len(tasks), stage, verbose, sum(_weight(k) for k in order)), {}
     for key, r in Parallel(n_jobs=n_jobs, backend="loky", return_as="generator_unordered")(
             delayed(_call)(key, tasks[key][0], tasks[key][1], dev) for key in order):
-        out[key] = r; bar.step(tasks[key][2], _weight(key))
+        out[key] = r; left = [k for k in order if k not in out]
+        names = sorted({str(k[-1]) if isinstance(k, tuple) else str(k) for k in left})
+        bar.step(f"{len(left)} left: {', '.join(names)}" if left else "finishing", _weight(key))
     if verbose:
         bar.close(say)
     return out
@@ -230,9 +241,10 @@ class FDEClassifier:
         else:
             self.model_ = {"models": {"P1": full["models"]["P1"]}, "spec": {"kind": "best"}, "labs": [], "info": full["info"]}
         self.crossfit_ = {"reference": fast_score(y, cf_ref, K, self.metric_), "ensemble": fast_score(y, cf_cand, K, self.metric_)}
-        say(f"Acceptance rule: lower bound of the gain {rule.lower_bound:+.4f} (needs > 0) -> "
-            + (f"ensemble used ({1 + len(full['labs'])} models)" if self.uses_ensemble_ else "best tuned learner kept")
-            + f"; total {time.time() - t0:.0f} s")
+        say(("Acceptance rule: the ensemble predicted better on the training folds, so it is used "
+             f"({1 + len(full['labs'])} models)") if self.uses_ensemble_ else
+            "Acceptance rule: the best tuned learner alone was as good on the training folds, so it is kept (one model)")
+        say(f"Done in {time.time() - t0:.0f} s")
         info = self.model_["info"]
         self.report_ = {"version": __version__, "rows": len(y), "classes": [str(c) for c in self.classes_], "imbalance_ratio": round(ir, 3),
                         "imbalance_group": self.group_, "metric": self.metric_, "best_learner": info["best_type"],

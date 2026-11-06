@@ -11,11 +11,9 @@
 """
 import argparse, json, sys
 
-import numpy as np
-import pandas as pd
-
 
 def _read(path):
+    import pandas as pd
     return pd.read_parquet(path) if path.endswith(".parquet") else pd.read_csv(path, low_memory=False)
 
 
@@ -31,7 +29,39 @@ def _scores(y, p):
             "balanced_accuracy": round(balanced_accuracy_score(y, p), 5)}
 
 
+NAMES = {"hgb": "HistGradientBoosting", "xgb": "XGBoost", "lgbm": "LightGBM", "cat": "CatBoost", "rf": "random forest",
+         "et": "extra trees", "svc": "SVC", "knn": "k-nearest neighbours", "lr": "logistic regression", "nb": "naive Bayes",
+         "mlp": "MLP", "dt": "decision tree"}
+METRIC = {"wF1": "weighted-F1", "macroF1": "macro-F1"}
+
+
+def _summary(r, test=None, n_test=None, saved=None):
+    """Readable result: data, best learner, acceptance rule, model, time, and the held-out scores when given."""
+    o = r["options"]
+    lines = ["", "FDE result",
+             f"  Data           {r['rows']} training rows, {len(r['classes'])} classes ({', '.join(r['classes'][:6])}"
+             f"{', ...' if len(r['classes']) > 6 else ''}), {r['imbalance_group']} (imbalance ratio {r['imbalance_ratio']:.1f})",
+             f"  Best learner   {NAMES.get(r['best_learner'], r['best_learner'])} (inner {METRIC[r['metric']]} {r['best_learner_inner_score']:.4f})",
+             ("  Ensemble       used: it predicted better than the best tuned learner on the training folds"
+              if r["uses_ensemble"] else
+              "  Ensemble       not needed: the best tuned learner alone was as good on the training folds"),
+             f"  Model          {r['models_in_predictor']} model{'s' if r['models_in_predictor'] > 1 else ''} "
+             f"({'best learner, members and combiner' if r['uses_ensemble'] else 'the best tuned learner alone'})",
+             f"  Fit time       {r['fit_seconds']:.0f} s ({o['trials']} trials, {o['members']} members, {o['device'].upper()})"]
+    if saved:
+        lines.append(f"  Saved to       {saved}")
+    if test:
+        lines += ["", f"  {'Held-out rows (' + str(n_test) + ')':24s} {'FDE':>8s} {'best tuned learner':>20s}"]
+        for k, lab in (("macro_f1", "macro-F1"), ("weighted_f1", "weighted-F1"), ("balanced_accuracy", "balanced accuracy")):
+            lines.append(f"    {lab:22s} {test['fde'][k]:8.4f} {test['best_tuned_learner'][k]:20.4f}")
+        lines.append("  FDE kept the best tuned learner, so both columns are the same." if not r["uses_ensemble"] else
+                     "  FDE used the ensemble; the second column shows the best tuned learner alone.")
+    print("\n".join(lines) + "\n")
+
+
 def _evaluate(X, y, a):
+    import numpy as np
+    import pandas as pd
     from sklearn.model_selection import train_test_split
     from .classifier import prepare_frame
     y = pd.Series(y).astype(str).to_numpy()
@@ -39,7 +69,11 @@ def _evaluate(X, y, a):
     clf = _clf(a).fit(X.iloc[tr], y[tr])
     p = clf.predict(X.iloc[te]); best = clf.model_["models"]["P1"]
     pb = clf.classes_[best.predict_proba(prepare_frame(X.iloc[te])[clf.columns_]).argmax(1)]
-    print(json.dumps({"report": clf.report_, "test": {"fde": _scores(y[te], p), "best_tuned_learner": _scores(y[te], pb)}}, indent=1))
+    test = {"fde": _scores(y[te], p), "best_tuned_learner": _scores(y[te], pb)}
+    if a.json:
+        print(json.dumps({"report": clf.report_, "test": test}, indent=1))
+    else:
+        _summary(clf.report_, test, len(te))
 
 
 def _common(s, trials=20, members="full"):
@@ -52,6 +86,7 @@ def _common(s, trials=20, members="full"):
                    help="gpu trains XGBoost, CatBoost and the MLP on a CUDA GPU: faster on large data, results can differ "
                         "slightly from the CPU (default: cpu)")
     s.add_argument("--quiet", action="store_true", help="no progress messages")
+    s.add_argument("--json", action="store_true", help="print the full report as JSON instead of the summary")
 
 
 def main(argv=None):
@@ -80,11 +115,15 @@ def main(argv=None):
     s.add_argument("--out", default=None, help="CSV to write (default: standard output)")
     a = ap.parse_args(argv)
     if a.cmd in ("demo", "fit", "evaluate") and not a.quiet:
-        print("[fde] loading the learners ...", file=sys.stderr, flush=True)
+        print("[fde] loading the learner libraries (a few seconds on the first run) ...", file=sys.stderr, flush=True)
     if a.cmd == "fit":
         d = _read(a.data); clf = _clf(a).fit(d.drop(columns=[a.target]), d[a.target]); clf.save(a.out)
-        print(json.dumps(clf.report_, indent=1))
+        if a.json:
+            print(json.dumps(clf.report_, indent=1))
+        else:
+            _summary(clf.report_, saved=a.out)
     elif a.cmd == "predict":
+        import pandas as pd
         from .classifier import FDEClassifier
         clf = FDEClassifier.load(a.model); d = _read(a.data)
         out = pd.DataFrame(clf.predict_proba(d), columns=[f"p_{c}" for c in clf.classes_]) if a.proba else pd.DataFrame({"prediction": clf.predict(d)})
@@ -95,7 +134,7 @@ def main(argv=None):
     elif a.cmd == "demo":
         from sklearn.datasets import load_breast_cancer
         d = load_breast_cancer(as_frame=True)
-        print(f"[fde] demo: breast cancer data (569 rows, 30 columns, 2 classes); quick settings: {a.trials} trials, "
+        _ = a.quiet or print(f"[fde] demo: breast cancer data (569 rows, 30 columns, 2 classes); quick settings: {a.trials} trials, "
               f"{a.members} members (the paper's settings: --trials 20 --members full)", file=sys.stderr, flush=True)
         _evaluate(d.data, d.target.map(dict(enumerate(d.target_names))), a)
     else:

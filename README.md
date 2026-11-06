@@ -73,7 +73,9 @@ fde evaluate --data data.csv --target label --test-size 0.2   # holdout scores f
 fde fit --data train.csv --target label --out light.fde --members light   # fewer members: faster prediction
 ```
 
-Progress messages go to the standard error stream; add `--quiet` to turn them off.
+The command line prints a short summary: the best tuned learner, whether the ensemble was needed, the model size, the
+fit time and, for `demo` and `evaluate`, the held-out scores. Add `--json` for the full report as JSON, and `--quiet`
+to turn off the progress messages (they go to the standard error stream).
 
 Text columns can be left as they are: every learner imputes and encodes them using only its own training rows, and
 treats missing values the same way.
