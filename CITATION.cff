@@ -20,8 +20,8 @@ authors:
   - family-names: Kurniawan
     given-names: Muchamad
     affiliation: "Department of Informatics, Institut Teknologi Adhi Tama Surabaya, Surabaya, Indonesia"
-version: 1.0.0
-doi: "10.5281/zenodo.23997869"
+version: 1.0.1
+doi: "10.5281/zenodo.23997868"
 date-released: 2026-11-06
 license: MIT
 repository-code: "https://github.com/DwiSunaryono/fde-tabular"

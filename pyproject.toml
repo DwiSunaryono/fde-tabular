@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fde-tabular"
-version = "1.0.0"
+version = "1.0.1"
 description = "FDE: Feasible Diverse Ensembles for tabular classification"
 readme = "README.md"
 license = "MIT"
