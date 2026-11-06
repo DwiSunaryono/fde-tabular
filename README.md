@@ -29,7 +29,9 @@ pip install fde-tabular
 ```
 
 Python 3.10 or later. Everything runs on the CPU: each tuned learner gets one thread, each extended member gets four
-(`member_threads`), and the four fit sets — three outer folds plus all rows — are built in parallel (`n_jobs`).
+(`member_threads`). Before fitting, FDE checks the free CPU cores and memory and runs that many tasks in parallel
+(`n_jobs`); the progress bar shows the three stages (tuning the learners, building the members, fitting the
+combiners) with an estimate of the remaining time.
 
 FDE does not use a GPU. To avoid downloading the GPU build of PyTorch, install the CPU build first:
 
@@ -38,12 +40,24 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install fde-tabular
 ```
 
+## Quick start
+
+```bash
+fde demo
+```
+
+This evaluates FDE on the breast cancer data that ships with scikit-learn (no file or download needed). The demo uses
+quick settings (5 Optuna trials per learner type and the light member set), so it finishes in about a minute on a
+laptop; `fde demo --trials 20 --members full` runs the settings evaluated in the paper. A progress bar shows the
+stage, the elapsed time and an estimate of the remaining time, and the result compares FDE with the best tuned
+learner on held-out rows.
+
 ## Use
 
 ```python
 from fde import FDEClassifier
 
-clf = FDEClassifier(random_state=0, n_jobs=4).fit(X_train, y_train)   # X_train: pandas DataFrame, y_train: labels
+clf = FDEClassifier(random_state=0).fit(X_train, y_train)   # X_train: pandas DataFrame, y_train: labels
 print(clf.report_)               # best learner, acceptance rule, whether the ensemble is used
 pred = clf.predict(X_test)
 proba = clf.predict_proba(X_test)
@@ -59,18 +73,106 @@ fde evaluate --data data.csv --target label --test-size 0.2   # holdout scores f
 fde fit --data train.csv --target label --out light.fde --members light   # fewer members: faster prediction
 ```
 
+Progress messages go to the standard error stream; add `--quiet` to turn them off.
+
 Text columns can be left as they are: every learner imputes and encodes them using only its own training rows, and
 treats missing values the same way.
+
+## Examples
+
+Each example runs as it is (`pip install fde-tabular` first). Times are for a 32-core laptop; with fewer cores they
+grow roughly in proportion. Predicted labels are returned as text (for example `"0"` and `"1"`).
+
+**Two classes, quick settings (about 25 s).** Breast cancer data, shipped with scikit-learn:
+
+```python
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split
+from fde import FDEClassifier
+
+X, y = load_breast_cancer(return_X_y=True, as_frame=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=0)
+clf = FDEClassifier(trials=5, members="light", verbose=1).fit(X_train, y_train)
+print("accuracy:", (clf.predict(X_test) == y_test.astype(str)).mean())
+print("ensemble used:", clf.uses_ensemble_, "| best learner:", clf.report_["best_learner"])
+```
+
+**Several classes, with probabilities (about 10 s).** Wine data, shipped with scikit-learn:
+
+```python
+from sklearn.datasets import load_wine
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
+from fde import FDEClassifier
+
+X, y = load_wine(return_X_y=True, as_frame=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=0)
+clf = FDEClassifier(trials=5, members="light", verbose=1).fit(X_train, y_train)
+print("macro-F1:", round(f1_score(y_test.astype(str), clf.predict(X_test), average="macro"), 4))
+print(clf.classes_)
+print(clf.predict_proba(X_test)[:3].round(3))      # one column per class, in the order of clf.classes_
+```
+
+**Imbalanced classes, a text column and missing values; save and reload (about 15 s).** Synthetic data:
+
+```python
+import numpy as np, pandas as pd
+from sklearn.datasets import make_classification
+from sklearn.metrics import balanced_accuracy_score
+from sklearn.model_selection import train_test_split
+from fde import FDEClassifier
+
+X, y = make_classification(n_samples=3000, n_features=12, n_informative=5, weights=[0.95, 0.05], random_state=1)
+X = pd.DataFrame(X, columns=[f"x{i}" for i in range(12)])
+X["region"] = np.where(X["x0"] > 0, "north", "south")     # text columns can stay as text
+X.loc[::25, "x1"] = np.nan                               # missing values are imputed inside each learner
+y = np.where(y == 1, "fraud", "normal")
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=0)
+clf = FDEClassifier(trials=5, members="light", verbose=1).fit(X_train, y_train)
+print("balanced accuracy:", round(balanced_accuracy_score(y_test, clf.predict(X_test)), 4))
+clf.save("fraud.fde")
+clf = FDEClassifier.load("fraud.fde")
+print(clf.predict(X_test.head()))
+```
+
+**Real imbalanced data with the settings of the paper (about 50 s).** The pc4 software-defect data from OpenML
+(downloaded once, about 0.1 MB; 1,458 rows, 12% defects). Here the ensemble is used:
+
+```python
+from sklearn.datasets import fetch_openml
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
+from fde import FDEClassifier
+
+X, y = fetch_openml(data_id=1049, return_X_y=True, as_frame=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=0)
+clf = FDEClassifier(verbose=1).fit(X_train, y_train)
+print("macro-F1:", round(f1_score(y_test.astype(str), clf.predict(X_test), average="macro"), 4))
+print("ensemble used:", clf.uses_ensemble_, "| models in predictor:", clf.report_["models_in_predictor"])
+print(clf.report_["acceptance_rule"])           # lower bound of the gain on the cross-fitted training folds
+```
+
+**Command line with your own CSV file.** This writes a CSV from the wine data, then fits, predicts and evaluates:
+
+```bash
+python -c "from sklearn.datasets import load_wine; d = load_wine(as_frame=True).frame; d.to_csv('wine.csv', index=False)"
+fde fit --data wine.csv --target target --out wine.fde --trials 5 --members light
+fde predict --model wine.fde --data wine.csv --proba --out wine_scores.csv
+fde evaluate --data wine.csv --target target --trials 5 --members light
+```
+
+On Windows, run each line separately.
 
 ## Options
 
 | Option | Default | Meaning |
 |---|---|---|
 | `random_state` (`--seed`) | 0 | seed shared by every split, search and member |
-| `n_jobs` (`--jobs`) | 4 | how many fit sets are built at the same time (each tuned learner is single-threaded) |
+| `n_jobs` (`--jobs`) | -1 | parallel tasks; -1 chooses from the free CPU cores and memory (results do not depend on it) |
 | `members` (`--members`) | `full` | `light` drops the extended members: 14 models instead of 22, several times faster at prediction, with somewhat lower accuracy |
 | `trials` (`--trials`) | 20 | Optuna trials for each learner type |
 | `member_threads` | 4 | threads per extended member (Python API only) |
+| `verbose` | 0 (1 on the command line) | 1 shows the system check and a progress bar with the stage and the remaining time; 2 also prints the report |
 
 These defaults are the configuration evaluated in the accompanying paper.
 

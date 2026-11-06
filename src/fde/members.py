@@ -78,25 +78,46 @@ class CWMember:
         return self.m.predict_proba(X)
 
 
-def tune_best_learner(X, y, K, metric, seed, splits, trials=20, svc_max_n=3000, n_ref=0):
-    """Returns (type, parameters, inner score, {type: (inner score, parameters)}, tuning seconds per type)."""
-    cols, best, pool, tune = list(X.columns), None, {}, {}
-    n = n_ref or len(y)
-    for mt in [t for t in LEARNER_TYPES if not (t == "svc" and n > svc_max_n)]:
-        t0 = time.time()
-        st = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
+def tune_one(X, y, K, metric, seed, splits, trials, mt):
+    """Optuna search (TPE, `trials` trials) of one learner type on the inner out-of-fold predictions. Returns
+    (inner score, parameters, seconds). Independent of every other type, so types can be tuned in parallel."""
+    t0, cols = time.time(), list(X.columns)
+    st = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
 
-        def objective(t, mt=mt):
-            pred = np.zeros(len(y), dtype=np.int64)
-            for tr, te in splits:
-                pred[te] = Member(mt, suggest(t, mt), cols, K, seed, proba=False).fit(X.iloc[tr], y[tr]).predict(X.iloc[te])
-            return score(y, pred, metric)
-        st.optimize(objective, n_trials=trials)
-        p = dict(st.best_params)
-        pool[mt] = (st.best_value, p); tune[mt] = round(time.time() - t0, 3)
-        if best is None or st.best_value > best[2] + EPS:
-            best = (mt, p, st.best_value)
+    def objective(t):
+        pred = np.zeros(len(y), dtype=np.int64)
+        for tr, te in splits:
+            pred[te] = Member(mt, suggest(t, mt), cols, K, seed, proba=False).fit(X.iloc[tr], y[tr]).predict(X.iloc[te])
+        return score(y, pred, metric)
+    st.optimize(objective, n_trials=trials)
+    return st.best_value, dict(st.best_params), round(time.time() - t0, 3)
+
+
+def tuned_types(n, svc_max_n=3000):
+    """Learner types tuned on n rows: SVC is skipped above svc_max_n rows."""
+    return [t for t in LEARNER_TYPES if not (t == "svc" and n > svc_max_n)]
+
+
+def pick_best(results):
+    """{type: (inner score, parameters, seconds)} in LEARNER_TYPES order -> (type, parameters, inner score, pool,
+    tuning seconds); the first type wins ties."""
+    best, pool, tune = None, {}, {}
+    for mt, (v, p, sec) in results.items():
+        pool[mt] = (v, p); tune[mt] = sec
+        if best is None or v > best[2] + EPS:
+            best = (mt, p, v)
     return best[0], best[1], best[2], pool, tune
+
+
+def tune_best_learner(X, y, K, metric, seed, splits, trials=20, svc_max_n=3000, n_ref=0, log=None):
+    """Returns (type, parameters, inner score, {type: (inner score, parameters)}, tuning seconds per type).
+    `log`, when given, is called with a progress message before each learner type is tuned."""
+    types = tuned_types(n_ref or len(y), svc_max_n); res = {}
+    for i, mt in enumerate(types, 1):
+        if log:
+            log(f"tuning {mt} ({i}/{len(types)})")
+        res[mt] = tune_one(X, y, K, metric, seed, splits, trials, mt)
+    return pick_best(res)
 
 
 def recipes(X, K, seed, best_type, best_params, pool, families):
@@ -114,16 +135,23 @@ def recipes(X, K, seed, best_type, best_params, pool, families):
     return out, others
 
 
-def build(X, y, K, metric, seed, families, n_ref=0, trials=20, inner_folds=3, keep_models=False):
+def member_task(make, X, y, splits, K, keep_models):
+    """Inner out-of-fold probabilities of one member (float32 values) and, when keep_models, its all-rows model."""
+    return member_oof(make, X, y, splits, K).astype(np.float32).astype(np.float64), (make().fit(X, y) if keep_models else None)
+
+
+def build(X, y, K, metric, seed, families, n_ref=0, trials=20, inner_folds=3, keep_models=False, log=None):
     """Best tuned learner and members on the rows (X, y): inner out-of-fold probabilities (float32 values, as stored
     by the study) and, when keep_models, the models fitted on all rows. Returns (oof dict, models dict, info)."""
     splits = inner_splits(y, seed, inner_folds)
-    mt, p, inner, pool, tune = tune_best_learner(X, y, K, metric, seed, splits, trials, n_ref=n_ref)
+    mt, p, inner, pool, tune = tune_best_learner(X, y, K, metric, seed, splits, trials, n_ref=n_ref, log=log)
     cols = list(X.columns)
     make_p1 = lambda: Member(mt, p, cols, K, seed)
     oof = {"P1": member_oof(make_p1, X, y, splits, K).astype(np.float32).astype(np.float64)}
     models = {"P1": make_p1().fit(X, y)} if keep_models else {}
     rec, others = recipes(X, K, seed, mt, p, pool, families)
+    if log:
+        log(f"best tuned learner: {mt}; building {len(rec)} imbalance-handling members")
     for lab, make in rec:
         oof[lab] = member_oof(make, X, y, splits, K).astype(np.float32).astype(np.float64)
         if keep_models:

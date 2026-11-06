@@ -15,7 +15,7 @@ Procedure (the configuration evaluated in the accompanying paper):
 members="light" drops the extended members of step 2, which makes the ensemble lighter and faster but somewhat less
 accurate in the accompanying paper.
 """
-import json, os, time
+import json, os, sys, time
 
 import joblib
 import numpy as np
@@ -27,7 +27,7 @@ from .combiners import GRID_WIDE, apply, fast_score, fit_combiner
 from .deploy_test import OUTER_FOLDS, acceptance_rule, gate_metric
 from .extended import KINDS, fit_member, raw_frame
 from .learners import Member
-from .members import build
+from .members import inner_splits, member_task, pick_best, recipes, tune_one, tuned_types
 
 FAMILIES = ("cwc2", "imb", "rbc2")
 MARGIN = 0.0                       # the ensemble is used when the lower bound of its gain lies above 0
@@ -56,14 +56,91 @@ def prepare_frame(X):
     return X.reset_index(drop=True)
 
 
-def _fitset(X, y, K, metric, seed, n_ref, trials, Xr, cat, threads, extended):
-    oof, models, info = build(X, y, K, metric, seed, FAMILIES, n_ref=n_ref, trials=trials, keep_models=True)
-    for kind in KINDS if extended else ():              # extended members work on the raw frame
-        o, m = fit_member(kind, Xr, y, K, seed, cat, threads)
-        oof[kind], models[kind] = o.astype(np.float32).astype(np.float64), m
-    labs = sorted(l for l in oof if l != "P1")
-    spec, _, weight = fit_combiner("stack_scaled", oof, labs, y, K, metric, seed, GRID_WIDE)
-    return {"models": models, "spec": spec, "weight": weight, "info": info, "labs": labs}
+class _Bar:
+    """One-line progress bar on stderr (shown on a terminal only): stage, bar, tasks done, elapsed and remaining time,
+    and the task that finished last."""
+
+    def __init__(self, total, stage, on, work=None):
+        self.total, self.stage, self.done, self.t0, self.what = max(total, 1), stage, 0, time.time(), ""
+        self.work, self.got = max(work or total, 1e-9), 0.0
+        self.on = on and sys.stderr.isatty()
+
+    def step(self, what, weight=1.0):
+        self.done = min(self.done + 1, self.total); self.got += weight; self.what = what; self.draw()
+
+    def draw(self):
+        if not self.on:
+            return
+        el = time.time() - self.t0; frac = min(self.got / self.work, 1.0); w = 24
+        rem = el / frac - el if frac > 0 else 0
+        fmt = lambda t: f"{int(t // 60)}:{int(t % 60):02d}"
+        bar = "#" * int(w * frac) + "-" * (w - int(w * frac))
+        sys.stderr.write(f"\r{self.stage} [{bar}] {self.done}/{self.total} {100 * frac:3.0f}%  elapsed {fmt(el)}  "
+                         f"remaining ~{fmt(rem)}  {self.what[:28]:28s}")
+        sys.stderr.flush()
+
+    def close(self, say):
+        if self.on:
+            sys.stderr.write("\r" + " " * 125 + "\r")
+        say(f"{self.stage}: {self.total} tasks in {time.time() - self.t0:.0f} s")
+
+
+def plan_jobs(n_jobs, X):
+    """Parallel jobs from what the machine has free: usable CPU cores (one is left for the system) and available
+    memory (each job is given about 30 times the size of the data, at least 300 MB). Returns (jobs, description)."""
+    import psutil
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except AttributeError:                               # not available on Windows and macOS
+        cores = os.cpu_count() or 1
+    free = psutil.virtual_memory().available
+    per_job = max(300e6, 30 * float(pd.DataFrame(X).memory_usage(deep=True).sum()))
+    auto = max(1, min(cores - 1, int(free // per_job)))
+    jobs = auto if n_jobs in (None, -1) else max(1, min(int(n_jobs), cores))
+    return jobs, f"{cores} CPU cores, {free / 1e9:.1f} GB memory free -> {jobs} parallel jobs"
+
+
+def gpu_note():
+    """Whether a CUDA GPU is visible. FDE runs on the CPU only, so that its results match the accompanying paper."""
+    import warnings
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import torch
+            if torch.cuda.is_available():
+                return f"{torch.cuda.get_device_name(0)} found, not used (FDE runs on the CPU)"
+    except Exception:
+        pass
+    return "none used (FDE runs on the CPU)"
+
+
+def _call(key, fn, args):
+    """One parallel task; library notices (deprecations, CUDA probing) are not shown."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return key, fn(*args)
+
+
+# rough relative cost of tuning each learner type, used only to start the slow tasks first and to weight the progress bar
+COST = {"cat": 20, "rf": 3, "et": 3, "xgb": 2, "lgbm": 2, "hgb": 2, "svc": 2, "mlp": 2, "catn_cat": 6, "nn_mlp": 3}
+
+
+def _weight(key):
+    return float(COST.get(key[-1] if isinstance(key, tuple) else key, 1))
+
+
+def _run(tasks, n_jobs, stage, verbose, say):
+    """Runs {key: (fn, args, label)} on n_jobs processes, slow tasks first; returns {key: result}."""
+    from joblib import Parallel, delayed
+    order = sorted(tasks, key=_weight, reverse=True)
+    bar, out = _Bar(len(tasks), stage, verbose, sum(_weight(k) for k in order)), {}
+    for key, r in Parallel(n_jobs=n_jobs, backend="loky", return_as="generator_unordered")(
+            delayed(_call)(key, tasks[key][0], tasks[key][1]) for key in order):
+        out[key] = r; bar.step(tasks[key][2], _weight(key))
+    if verbose:
+        bar.close(say)
+    return out
 
 
 def _probs(models, labs, X, Xr=None):
@@ -77,15 +154,16 @@ class FDEClassifier:
     Parameters
     ----------
     random_state : int, seed shared by every split, search and member.
-    n_jobs : int, how many fit sets are built at the same time (each tuned learner is single-threaded).
+    n_jobs : int, parallel tasks; -1 (default) chooses from the free CPU cores and memory (see plan_jobs). Each tuned
+        learner is single-threaded. Results do not depend on n_jobs.
     trials : int, Optuna trials for each learner type (20 in the evaluated configuration).
     members : "full" (default) or "light", the latter keeping only the imbalance-handling members: lighter and
         faster.
     member_threads : int, threads per extended member (4 in the evaluated configuration).
-    verbose : int, print the report once fitting ends when non-zero.
+    verbose : int, 0 silent; 1 progress messages on stderr; 2 also prints the report when fitting ends.
     """
 
-    def __init__(self, random_state=0, n_jobs=4, trials=20, members="full", member_threads=4, verbose=0):
+    def __init__(self, random_state=0, n_jobs=-1, trials=20, members="full", member_threads=4, verbose=0):
         self.random_state, self.n_jobs, self.trials = random_state, n_jobs, trials
         self.members, self.member_threads, self.verbose = members, member_threads, verbose
 
@@ -101,13 +179,44 @@ class FDEClassifier:
         if K < 2:
             raise ValueError("at least two classes are required")
         self.metric_ = gate_metric(y); self.group_, ir = imbalance_group(y)
-        from joblib import Parallel, delayed
         rounds = list(StratifiedKFold(OUTER_FOLDS, shuffle=True, random_state=seed).split(np.zeros(len(y)), y))
         sub = lambda D, i: D.iloc[i].reset_index(drop=True)
-        jobs = [(sub(X, i), y[i], sub(Xr, i)) for i, _ in rounds] + [(X, y, Xr)]
-        out = Parallel(n_jobs=self.n_jobs, backend="loky")(
-            delayed(_fitset)(Xf, yf, K, self.metric_, seed, len(y), self.trials, Xrf, self.cat_, self.member_threads,
-                                  self.members == "full") for Xf, yf, Xrf in jobs)
+        sets = [(sub(X, i), y[i], sub(Xr, i)) for i, _ in rounds] + [(X, y, Xr)]
+        names = [f"fold {k + 1}/3" for k in range(3)] + ["all rows"]
+        say = (lambda msg: print(f"[fde] {msg}", file=sys.stderr, flush=True)) if self.verbose else (lambda msg: None)
+        say(f"{len(y)} rows, {K} classes, metric {self.metric_}, members: {self.members}")
+        say("checking the system ...")
+        jobs, machine = plan_jobs(self.n_jobs, X)
+        say(f"  CPU and memory: {machine}")
+        if self.verbose:
+            say(f"  GPU: {gpu_note()}")
+        splits = [inner_splits(yf, seed, 3) for _, yf, _ in sets]
+        types = tuned_types(len(y))
+        # stage 1: every learner type in every fit set is tuned as its own task
+        tuned = _run({(k, mt): (tune_one, (Xf, yf, K, self.metric_, seed, splits[k], self.trials, mt), f"{names[k]}: {mt}")
+                      for k, (Xf, yf, _) in enumerate(sets) for mt in types}, jobs, "Stage 1/3 Tuning learners", self.verbose, say)
+        # stage 2: the best learner and every member of every fit set, each as its own task
+        best, tasks = [], {}
+        for k, (Xf, yf, Xrf) in enumerate(sets):
+            mt, p, inner, pool, tune = pick_best({t: tuned[(k, t)] for t in types})
+            rec, others = recipes(Xf, K, seed, mt, p, pool, FAMILIES)
+            best.append({"best_type": mt, "best_params": p, "inner_score": inner, "pool": {t: round(v[0], 5) for t, v in pool.items()},
+                         "tune_seconds": tune, "other_types": others, "n_rows": len(yf)})
+            cols = list(Xf.columns)
+            tasks[(k, "P1")] = (member_task, ((lambda mt=mt, p=p: Member(mt, p, cols, K, seed)), Xf, yf, splits[k], K, True), f"{names[k]}: P1")
+            for lab, make in rec:
+                tasks[(k, lab)] = (member_task, (make, Xf, yf, splits[k], K, True), f"{names[k]}: {lab}")
+            for kind in KINDS if self.members == "full" else ():
+                tasks[(k, kind)] = (fit_member, (kind, Xrf, yf, K, seed, self.cat_, self.member_threads), f"{names[k]}: {kind}")
+        built = _run(tasks, jobs, "Stage 2/3 Building members", self.verbose, say)
+        oofs, models = [{} for _ in sets], [{} for _ in sets]
+        for (k, lab), (o, m) in built.items():
+            oofs[k][lab] = o.astype(np.float32).astype(np.float64); models[k][lab] = m
+        # stage 3: the combiner of every fit set
+        labs = [sorted(l for l in oofs[k] if l != "P1") for k in range(4)]
+        comb = _run({k: (fit_combiner, ("stack_scaled", oofs[k], labs[k], sets[k][1], K, self.metric_, seed, GRID_WIDE), names[k])
+                     for k in range(4)}, jobs, "Stage 3/3 Combiners", self.verbose, say)
+        out = [{"models": models[k], "spec": comb[k][0], "weight": comb[k][2], "info": best[k], "labs": labs[k]} for k in range(4)]
         cf_ref, cf_cand = np.zeros(len(y), int), np.zeros(len(y), int)
         for (i, j), r in zip(rounds, out[:3]):
             p = _probs(r["models"], r["labs"], sub(X, j), sub(Xr, j))
@@ -120,6 +229,9 @@ class FDEClassifier:
         else:
             self.model_ = {"models": {"P1": full["models"]["P1"]}, "spec": {"kind": "best"}, "labs": [], "info": full["info"]}
         self.crossfit_ = {"reference": fast_score(y, cf_ref, K, self.metric_), "ensemble": fast_score(y, cf_cand, K, self.metric_)}
+        say(f"Acceptance rule: lower bound of the gain {rule.lower_bound:+.4f} (needs > 0) -> "
+            + (f"ensemble used ({1 + len(full['labs'])} models)" if self.uses_ensemble_ else "best tuned learner kept")
+            + f"; total {time.time() - t0:.0f} s")
         info = self.model_["info"]
         self.report_ = {"version": __version__, "rows": len(y), "classes": [str(c) for c in self.classes_], "imbalance_ratio": round(ir, 3),
                         "imbalance_group": self.group_, "metric": self.metric_, "best_learner": info["best_type"],
@@ -130,7 +242,7 @@ class FDEClassifier:
                         "uses_ensemble": self.uses_ensemble_, "models_in_predictor": 1 + (len(self.model_["labs"]) if self.uses_ensemble_ else 0),
                         "options": {"members": self.members, "trials": self.trials, "member_threads": self.member_threads},
                         "fit_seconds": round(time.time() - t0, 1)}
-        if self.verbose:
+        if self.verbose >= 2:
             print(json.dumps(self.report_, indent=1))
         return self
 
