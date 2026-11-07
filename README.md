@@ -1,5 +1,8 @@
 # FDE: Feasible Diverse Ensembles for tabular classification
+Feasible Diverse Ensembles (FDE) is a machine learning framework designed to improve tabular classification through diverse ensemble learning.
+FDE combines multiple machine learning models, addresses class imbalance, and adaptively selects between ensemble predictions and the best-performing individual model.
 
+This repository provides the implementation, documentation, and experimental resources for FDE.
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23997869.svg)](https://doi.org/10.5281/zenodo.23997869)
 
 FDE wraps the best tuned single learner in a diverse ensemble and hands prediction to the ensemble only when the
