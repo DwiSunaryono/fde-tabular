@@ -15,6 +15,7 @@ FDEClassifier fits stack_scaled on the wide grid; the other combiners can be rea
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
+from threadpoolctl import threadpool_limits
 
 EPS = 1e-12
 STACK_C = (0.01, 0.1, 1.0, 10.0)
@@ -55,6 +56,7 @@ def scales(o_sel, y, K, metric, grid=GRID):
     return None if np.all(w == 1) else w
 
 
+@threadpool_limits.wrap(limits=1)                          # the fitted combiner must not depend on the numeric threads
 def stack(oof, labs, y, K, seed):
     """(cross-validated probabilities, fitted model or None). Columns hold the best learner first, then the members
     in `labs` order."""

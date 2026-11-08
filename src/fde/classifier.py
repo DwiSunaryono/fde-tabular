@@ -1,17 +1,19 @@
-"""FDEClassifier: Feasible Diverse Ensemble.
+"""FDEClassifier: Fast-Deployment Ensemble.
 
 Procedure (the configuration evaluated in the accompanying paper):
   1. Metric of a run: macro-F1 when there are two classes and the minority share is below 0.15, weighted-F1
      otherwise.
-  2. The training rows are cut into 3 stratified outer folds. For each fold, on its fit rows, and once on all rows,
+  2. On all rows, and for a balanced dataset (imbalance ratio below 3) also on the fit rows of 3 stratified outer folds,
      two things are built: the best tuned learner, and the members — class-weighted, imbalance-specific and
      rebalanced ones, plus those of fde.extended (large-budget GBDTs, an MLP, large forests).
   3. Combiner: stacking (multinomial logistic regression over the probabilities of the best learner and the
      members) followed by per-class probability scales; both are fitted on out-of-fold probabilities.
-  4. Acceptance rule, cross-fitted over the pooled outer-fold predictions: the ensemble is used only if three
-     conditions hold — the lower 5% bootstrap quantile of its gain over the best tuned learner is above 0, its
-     weight in the all-rows fit is non-zero, and it differs from the best learner on at least one outer-fold row.
-     Otherwise the best tuned learner is kept. No imbalance level is treated differently.
+  4. Imbalanced data (ratio of at least 3) use the ensemble. On balanced data, the acceptance rule decides, cross-fitted
+     over the pooled outer-fold predictions: the ensemble is used only if three conditions hold — the lower 5% bootstrap
+     quantile of its gain over the best tuned learner is above 0, the combiner indicator in the all-rows fit is 1 (stack or class-wise adjustment kept), and it
+     differs from the best learner on at least one outer-fold row. Otherwise the best tuned learner is kept.
+  5. Sizing: starting from all members, the costliest member is dropped as long as the out-of-fold score stays at that
+     of the full set, using a fixed table of member costs. The best learner always stays.
 members="light" drops the extended members of step 2, which makes the ensemble lighter and faster but somewhat less
 accurate in the accompanying paper.
 """
@@ -63,6 +65,31 @@ def console():
     """Rich console on stderr for progress and messages (plain text when stderr is not a terminal)."""
     from rich.console import Console
     return Console(stderr=True, highlight=False)
+
+
+# Typical prediction cost of each member, in ms per 1,000 rows on one core. A fixed table keeps the choice of members
+# reproducible, which timing during a fit would not.
+MEMBER_COST = {"big_et": 249.5242, "big_lgbm": 17.0464, "big_rf": 203.361, "big_xgb": 8.2391, "catn_cat": 5.2984, "catn_lgbm": 11.2976, "catn_xgb": 10.015, "cwc2_cat": 3.3216, "cwc2_dt": 1.0084, "cwc2_et": 21.411, "cwc2_hgb": 6.5746, "cwc2_knn": 23.9929, "cwc2_lgbm": 5.4131, "cwc2_lr": 4.9641, "cwc2_mlp": 6.8837, "cwc2_rf": 59.7778, "cwc2_svc": 184.2882, "cwc2_xgb": 4.563, "imb_brf": 29.709, "imb_eec": 39.3647, "imb_rusb": 2.3713, "nn_mlp": 27.3576, "rbc2_cat": 3.3441, "rbc2_dt": 1.0971, "rbc2_et": 19.3371, "rbc2_hgb": 9.0452, "rbc2_knn": 10.7094, "rbc2_lgbm": 7.9928, "rbc2_lr": 5.1331, "rbc2_mlp": 7.0908, "rbc2_rf": 59.8312, "rbc2_svc": 93.3021, "rbc2_xgb": 4.5105}
+TYPICAL_COST = 9.0452
+
+
+def size_ensemble(oof, labs, spec, y, K, metric, seed):
+    """Cost-aware elimination: from all members, repeatedly drop the costliest member whose removal keeps the out-of-fold
+    score at that of all members; the best learner always stays. Returns (spec, labs, weight)."""
+    score = lambda p: fast_score(y, p.argmax(1), K, metric)
+    cost = lambda l: MEMBER_COST.get(l, TYPICAL_COST)
+    _, full_oof, _ = fit_combiner("stack_scaled", oof, labs, y, K, metric, seed, GRID_WIDE)
+    ref = score(full_oof); cur, kept = sorted(labs), (spec, list(labs), 1.0)
+    while len(cur) > 1:
+        for l in sorted(cur, key=lambda x: (-cost(x), x)):
+            part = [x for x in cur if x != l]
+            s2, o2, w2 = fit_combiner("stack_scaled", {x: oof[x] for x in ["P1"] + part}, part, y, K, metric, seed, GRID_WIDE)
+            if w2 > 0 and score(o2) >= ref:
+                cur, kept = part, (s2, part, w2)
+                break
+        else:
+            break
+    return kept
 
 
 def _say(con, verbose):
@@ -183,13 +210,19 @@ def _run(tasks, n_jobs, stage, verbose, say, dev="cpu", con=None):
     return out
 
 
+def _used_labs(spec, labs):
+    """Members that enter the prediction: none when the combiner keeps the best learner, or when the stack was rejected
+    and only the class-wise adjustment of the best learner is kept."""
+    return list(labs) if spec.get("kind") != "best" and spec.get("lr") is not None else []
+
+
 def _probs(models, labs, X, Xr=None):
     return {l: models[l].predict_proba(Xr if l in KINDS else X).astype(np.float32).astype(np.float64)
             for l in ["P1"] + labs if l in models}
 
 
 class FDEClassifier:
-    """Feasible Diverse Ensemble for tabular classification, in scikit-learn style.
+    """Fast-Deployment Ensemble for tabular classification, in scikit-learn style.
 
     Parameters
     ----------
@@ -203,11 +236,16 @@ class FDEClassifier:
     device : "cpu" (default; the results of the accompanying paper) or "gpu" (XGBoost, CatBoost and the MLP on the first
         CUDA GPU; faster on large data, results can differ slightly from the CPU; falls back to the CPU without a GPU).
     verbose : int, 0 silent; 1 progress messages on stderr; 2 also prints the report when fitting ends.
+    keep_candidates : bool, keep every fitted member and its out-of-fold probabilities after pruning (False by default),
+        so that fde.speed_report can time the FDE predictor against greedy ensemble selection and the full member set
+        on the same fitted models. The saved model is larger.
     """
 
-    def __init__(self, random_state=0, n_jobs=-1, trials=20, members="full", member_threads=4, device="cpu", verbose=0):
+    def __init__(self, random_state=0, n_jobs=-1, trials=20, members="full", member_threads=4, device="cpu", verbose=0,
+                 keep_candidates=False):
         self.random_state, self.n_jobs, self.trials = random_state, n_jobs, trials
         self.members, self.member_threads, self.device, self.verbose = members, member_threads, device, verbose
+        self.keep_candidates = keep_candidates
 
     def fit(self, X, y):
         t0 = time.time()
@@ -225,8 +263,9 @@ class FDEClassifier:
         self.metric_ = gate_metric(y); self.group_, ir = imbalance_group(y)
         rounds = list(StratifiedKFold(OUTER_FOLDS, shuffle=True, random_state=seed).split(np.zeros(len(y)), y))
         sub = lambda D, i: D.iloc[i].reset_index(drop=True)
-        sets = [(sub(X, i), y[i], sub(Xr, i)) for i, _ in rounds] + [(X, y, Xr)]
-        names = [f"fold {k + 1}/3" for k in range(3)] + ["all rows"]
+        self.route_ = "acceptance_rule" if self.group_ == "balanced" else "ensemble"
+        sets = ([(sub(X, i), y[i], sub(Xr, i)) for i, _ in rounds] if self.route_ == "acceptance_rule" else []) + [(X, y, Xr)]
+        names = ([f"fold {k + 1}/3" for k in range(3)] if self.route_ == "acceptance_rule" else []) + ["all rows"]
         con = console(); say = _say(con, self.verbose)
         say(f"{len(y)} rows, {K} classes, metric {self.metric_}, members: {self.members}")
         say("checking the system ...", "dim")
@@ -257,37 +296,49 @@ class FDEClassifier:
         for (k, lab), (o, m) in built.items():
             oofs[k][lab] = o.astype(np.float32).astype(np.float64); models[k][lab] = m
         # stage 3: the combiner of every fit set
-        labs = [sorted(l for l in oofs[k] if l != "P1") for k in range(4)]
+        labs = [sorted(l for l in oofs[k] if l != "P1") for k in range(len(sets))]
         comb = _run({k: (fit_combiner, ("stack_scaled", oofs[k], labs[k], sets[k][1], K, self.metric_, seed, GRID_WIDE), names[k])
-                     for k in range(4)}, jobs, "Stage 3/3 Combiners", self.verbose, say, "cpu", con)
-        out = [{"models": models[k], "spec": comb[k][0], "weight": comb[k][2], "info": best[k], "labs": labs[k]} for k in range(4)]
-        cf_ref, cf_cand = np.zeros(len(y), int), np.zeros(len(y), int)
-        for (i, j), r in zip(rounds, out[:3]):
-            p = _probs(r["models"], r["labs"], sub(X, j), sub(Xr, j))
-            cf_ref[j] = p["P1"].argmax(1); cf_cand[j] = apply(r["spec"], p).argmax(1)
-        rule = acceptance_rule(y, cf_ref, cf_cand, metric=self.metric_, seed=0, K=K, margin=MARGIN)
-        full = out[3]
-        self.uses_ensemble_ = bool(rule.accept and full["weight"] > 0 and np.any(cf_cand != cf_ref))
-        self.decision_ = ("used" if self.uses_ensemble_ else "not_consistent" if not rule.accept
-                          else "same_predictions" if not np.any(cf_cand != cf_ref) else "no_member_weight")
+                     for k in range(len(sets))}, jobs, "Stage 3/3 Combiners", self.verbose, say, "cpu", con)
+        out = [{"models": models[k], "spec": comb[k][0], "weight": comb[k][2], "info": best[k], "labs": labs[k]} for k in range(len(sets))]
+        full = out[-1]; n_built = len(full["labs"]); rule = None; self.crossfit_ = None
+        if self.route_ == "acceptance_rule":
+            cf_ref, cf_cand = np.zeros(len(y), int), np.zeros(len(y), int)
+            for (i, j), r in zip(rounds, out[:3]):
+                p = _probs(r["models"], r["labs"], sub(X, j), sub(Xr, j))
+                cf_ref[j] = p["P1"].argmax(1); cf_cand[j] = apply(r["spec"], p).argmax(1)
+            rule = acceptance_rule(y, cf_ref, cf_cand, metric=self.metric_, seed=0, K=K, margin=MARGIN)
+            self.crossfit_ = {"reference": fast_score(y, cf_ref, K, self.metric_), "ensemble": fast_score(y, cf_cand, K, self.metric_)}
+            self.uses_ensemble_ = bool(rule.accept and full["weight"] > 0 and np.any(cf_cand != cf_ref))
+            self.decision_ = ("used" if self.uses_ensemble_ else "not_consistent" if not rule.accept
+                              else "same_predictions" if not np.any(cf_cand != cf_ref) else "no_member_weight")
+        else:
+            self.uses_ensemble_ = bool(full["weight"] > 0)
+            self.decision_ = "used" if self.uses_ensemble_ else "no_member_weight"
         if self.uses_ensemble_:
-            self.model_ = full
+            spec, kept, w2 = size_ensemble(oofs[-1], full["labs"], full["spec"], y, K, self.metric_, seed)
+            self.uses_ensemble_ = bool(w2 > 0)
+        if self.uses_ensemble_:
+            self.model_ = {"models": {l: full["models"][l] for l in ["P1"] + kept}, "spec": spec, "labs": kept, "info": full["info"]}
         else:
             self.model_ = {"models": {"P1": full["models"]["P1"]}, "spec": {"kind": "best"}, "labs": [], "info": full["info"]}
-        self.crossfit_ = {"reference": fast_score(y, cf_ref, K, self.metric_), "ensemble": fast_score(y, cf_cand, K, self.metric_)}
+        self.candidates_ = ({"models": full["models"], "labs": full["labs"], "spec_full": full["spec"], "oof": oofs[-1], "y": y}
+                            if self.keep_candidates else None)
+        called = 1 + len(_used_labs(self.model_["spec"], self.model_["labs"]))
         if self.uses_ensemble_:
-            say(f"Acceptance rule: the ensemble predicted better on the training folds, so it is used ({1 + len(full['labs'])} models)", "bold green")
+            say(f"The ensemble is used: {1 + len(self.model_['labs'])} models kept from {1 + n_built}, {called} called at prediction", "bold green")
         else:
-            say("Acceptance rule: the best tuned learner alone was as good on the training folds, so it is kept (one model)", "bold cyan")
+            say("The best tuned learner alone is kept (one model)", "bold cyan")
         say(f"Done in {time.time() - t0:.0f} s", "bold green")
         info = self.model_["info"]
         self.report_ = {"version": __version__, "rows": len(y), "classes": [str(c) for c in self.classes_], "imbalance_ratio": round(ir, 3),
                         "imbalance_group": self.group_, "metric": self.metric_, "best_learner": info["best_type"],
                         "best_learner_inner_score": round(info["inner_score"], 5),
-                        "acceptance_rule": {"lower_bound": round(rule.lower_bound, 5), "gain": round(rule.gain, 5), "margin": MARGIN,
-                                            "accepted": bool(rule.accept)},
+                        "route": self.route_,
+                        "acceptance_rule": None if rule is None else {"lower_bound": round(rule.lower_bound, 5), "gain": round(rule.gain, 5), "margin": MARGIN,
+                                                                      "accepted": bool(rule.accept)},
                         "crossfit_scores": self.crossfit_, "decision": self.decision_,
-                        "uses_ensemble": self.uses_ensemble_, "models_in_predictor": 1 + (len(self.model_["labs"]) if self.uses_ensemble_ else 0),
+                        "uses_ensemble": self.uses_ensemble_, "models_built": 1 + n_built, "models_in_predictor": 1 + (len(self.model_["labs"]) if self.uses_ensemble_ else 0),
+                        "models_called_at_prediction": called, "stack_kept": bool(self.uses_ensemble_ and self.model_["spec"].get("lr") is not None),
                         "options": {"members": self.members, "trials": self.trials, "member_threads": self.member_threads,
                                     "device": self.device_used_},
                         "fit_seconds": round(time.time() - t0, 1)}
@@ -298,7 +349,7 @@ class FDEClassifier:
     def predict_proba(self, X):
         Xr = raw_frame(X, self.cat_)[0]
         X = prepare_frame(X)[self.columns_]
-        return apply(self.model_["spec"], _probs(self.model_["models"], self.model_["labs"], X, Xr))
+        return apply(self.model_["spec"], _probs(self.model_["models"], _used_labs(self.model_["spec"], self.model_["labs"]), X, Xr))
 
     def predict(self, X):
         return self.classes_[self.predict_proba(X).argmax(1)]

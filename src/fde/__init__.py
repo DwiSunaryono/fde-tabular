@@ -1,6 +1,6 @@
-"""FDE: Feasible Diverse Ensembles for tabular classification."""
-__version__ = "1.0.1"
-__all__ = ["FDEClassifier", "__version__"]
+"""FDE: Fast-Deployment Ensemble for imbalanced tabular classification."""
+__version__ = "1.1.0"
+__all__ = ["FDEClassifier", "speed_report", "__version__"]
 
 
 def __getattr__(name):
@@ -9,4 +9,7 @@ def __getattr__(name):
     if name == "FDEClassifier":
         from .classifier import FDEClassifier
         return FDEClassifier
+    if name == "speed_report":
+        from .speed import speed_report
+        return speed_report
     raise AttributeError(name)

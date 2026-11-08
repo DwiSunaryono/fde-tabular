@@ -9,6 +9,7 @@ import numpy as np
 
 from . import device
 import pandas as pd
+from threadpoolctl import threadpool_limits
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -137,6 +138,7 @@ class Member:
         # proba=False: labels only while searching (SVC skips Platt scaling)
         self.mt, self.params, self.mask, self.K, self.seed, self.proba = mt, dict(params), list(mask), K, seed, proba
 
+    @threadpool_limits.wrap(limits=1)                      # the fitted model must not depend on the numeric threads
     def fit(self, X, y, balanced=False):
         Xs = X[self.mask]
         cat = [c for c in self.mask if not pd.api.types.is_numeric_dtype(Xs[c])]

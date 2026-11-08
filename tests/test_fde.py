@@ -63,3 +63,29 @@ def test_unknown_device_rejected():
     X, y = _data(n=60)
     with pytest.raises(ValueError):
         FDEClassifier(device="tpu").fit(X, y)
+
+
+def test_greedy_select_starts_from_best_learner():
+    from fde.speed import greedy_select
+    rng = np.random.default_rng(0); y = rng.integers(0, 2, 300)
+    good = np.eye(2)[y] * 0.8 + 0.1; noisy = rng.dirichlet([1, 1], 300)
+    sel = greedy_select({"P1": noisy, "m1": good, "m2": noisy}, ["m1", "m2"], y, 2)
+    assert sel is not None and "P1" in sel and sel.get("m1", 0) > 0 and abs(sum(sel.values()) - 1) < 1e-12
+
+
+def test_speed_report_needs_candidates():
+    from fde.speed import speed_report
+    clf = FDEClassifier(); clf.candidates_ = None
+    with pytest.raises(ValueError):
+        speed_report(clf, pd.DataFrame({"x": [1.0]}))
+
+
+@pytest.mark.slow
+def test_speed_report_on_holdout():
+    from fde.speed import speed_report
+    X, y = _data()
+    clf = FDEClassifier(random_state=0, n_jobs=2, trials=2, members="light", keep_candidates=True).fit(X.iloc[:300], y[:300])
+    s = speed_report(clf, X.iloc[300:].reset_index(drop=True), y[300:], repeats=2)
+    assert set(s["pipelines"]) == {"fde", "greedy", "full", "best"} and s["ratio_greedy_to_fde"] > 0
+    assert s["pipelines"]["fde"]["models"] == clf.report_["models_called_at_prediction"]
+    assert (clf.predict(X.iloc[300:]) == clf.classes_[clf.predict_proba(X.iloc[300:]).argmax(1)]).all()

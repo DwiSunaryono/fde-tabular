@@ -1,9 +1,10 @@
 cff-version: 1.2.0
 message: "Please cite this software as shown below."
-title: "FDE: Feasible Diverse Ensembles for tabular classification"
+title: "FDE: Fast-Deployment Ensemble for imbalanced tabular classification"
 abstract: >-
-  FDE builds a diverse ensemble around the best tuned single learner and keeps the ensemble only when a
-  cross-fitted acceptance rule shows, on the training data, that it beats that learner.
+  FDE builds a heterogeneous ensemble around the best tuned single learner, routes datasets by their class ratio,
+  and removes members in order of a fixed prediction-cost table while the out-of-fold score of the full member set is
+  kept, so that the deployed ensemble predicts fast.
 authors:
   - family-names: Sunaryono
     given-names: Dwi
@@ -20,9 +21,9 @@ authors:
   - family-names: Kurniawan
     given-names: Muchamad
     affiliation: "Department of Informatics, Institut Teknologi Adhi Tama Surabaya, Surabaya, Indonesia"
-version: 1.0.1
+version: 1.1.0
 doi: "10.5281/zenodo.23997868"
-date-released: 2026-11-06
+date-released: 2026-11-08
 license: MIT
 repository-code: "https://github.com/DwiSunaryono/fde-tabular"
 url: "https://github.com/DwiSunaryono/fde-tabular"

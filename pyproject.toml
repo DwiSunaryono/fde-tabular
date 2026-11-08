@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fde-tabular"
-version = "1.0.1"
-description = "FDE: Feasible Diverse Ensembles for tabular classification"
+version = "1.1.0"
+description = "FDE: Fast-Deployment Ensemble for imbalanced tabular classification"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -30,6 +30,7 @@ dependencies = [
     "catboost>=1.2",
     "optuna>=3.6",
     "joblib>=1.4",
+    "threadpoolctl>=3.1",
     "torch>=2.1",
     "psutil>=5.9",
     "rich>=13",

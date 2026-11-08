@@ -1,12 +1,15 @@
-# FDE: Feasible Diverse Ensembles for tabular classification
+# FDE: Fast-Deployment Ensemble for imbalanced tabular classification
 FDE is a machine learning framework designed to improve tabular classification through diverse ensemble learning.
 FDE combines multiple machine learning models, addresses class imbalance, and adaptively selects between ensemble predictions and the best-performing individual model.
 
 This repository provides the implementation, documentation, and experimental resources for FDE.
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23997869.svg)](https://doi.org/10.5281/zenodo.23997869)
 
-FDE wraps the best tuned single learner in a diverse ensemble and hands prediction to the ensemble only when the
-training data support it over that learner. When they do not, the best tuned learner is used on its own.
+FDE builds a diverse ensemble around the best tuned single learner and keeps only as many members as its score requires.
+Imbalanced data receive the ensemble; balanced data receive it only when a cross-fitted acceptance rule supports a gain.
+Otherwise the best tuned learner is used on its own. *Fast deployment* refers to prediction time: members are removed
+in order of their prediction cost, so the deployed ensemble calls few models. `fde evaluate --speed` measures this on
+your own data (see [Checking the Fast claim](#checking-the-fast-claim)).
 
 - **Best tuned learner.** Optuna tunes twelve learner types on inner cross-validation (CatBoost, LightGBM, XGBoost,
   HistGradientBoosting, random forest, extra trees, SVC, k-nearest neighbours, logistic regression, naive Bayes, MLP
@@ -18,11 +21,17 @@ training data support it over that learner. When they do not, the best tuned lea
   categorical coding, up to 5,000 trees with early stopping), an MLP with three hidden layers of 256 units, and
   random forest and extra trees with 500 trees. Each is bagged over 3 folds of its training rows.
 - **Combiner.** A stack (multinomial logistic regression) over the probabilities of the best learner and the
-  members, with a per-class rescaling of the resulting probabilities on top.
-- **Cross-fitted acceptance rule.** Three outer cross-fitted folds of the training rows decide. The ensemble is kept
-  only if the lower 5% bootstrap quantile of its gain over the best tuned learner lies above 0, if its weight in the
-  all-rows fit is non-zero, and if it changes at least one outer-fold prediction. Otherwise the best tuned learner is
-  kept. Every imbalance level follows the same rule; on balanced data the best tuned learner is usually the one kept.
+  members, with a class-wise score adjustment of the resulting probabilities on top. The stack is kept only when its
+  cross-validated Brier score is lower than that of the best learner; when it is rejected and only the adjustment is
+  kept, the members are not called at prediction.
+- **Class-ratio route.** With a majority-to-minority ratio of 3 or more in the training rows, the ensemble is used
+  when the combiner changes the probabilities of the best learner. Below 3, the cross-fitted acceptance rule decides.
+- **Cross-fitted acceptance rule.** Three outer cross-fitted folds of the training rows decide on balanced data. The
+  ensemble is kept only if the lower 5% bootstrap quantile of its gain over the best tuned learner lies above 0, if its
+  weight in the all-rows fit is non-zero, and if it changes at least one outer-fold prediction. Otherwise the best tuned
+  learner is kept, which is the usual outcome on balanced data.
+- **Ensemble sizing.** From all members, the costliest member is dropped as long as the inner out-of-fold score stays at
+  that of all members, with the combiner refitted at each step and a fixed table of member costs. The best learner stays.
 
 A run is scored with macro-F1 when there are two classes and the minority share is below 0.15, and with weighted-F1
 in every other case.
@@ -102,12 +111,15 @@ combiners) with an estimate of the remaining time.
 ## Quick start
 
 ```bash
-fde demo                          # breast cancer data: the best tuned learner alone is enough
-fde demo --example imbalanced     # synthetic imbalanced data: the ensemble is used
+fde demo                            # imbalanced data: the ensemble is used, and its prediction time is measured
+fde demo --example breast-cancer    # balanced data: the best tuned learner alone is enough
 ```
 
-The first demo evaluates FDE on the breast cancer data that ships with scikit-learn, the second on synthetic data with a
-10% minority class (no file or download needed for either). The summary explains why the ensemble was used or not. The demos use
+The first demo evaluates FDE on synthetic data with a 10% minority class, the second on the breast cancer data that
+ships with scikit-learn (no file or download needed for either). The first demo also times the FDE predictor against
+greedy ensemble selection over the same members (see [Checking the Fast claim](#checking-the-fast-claim); `--no-speed`
+skips this), and both end with a short panel, *What this demo shows*: the held-out score of FDE against the best tuned
+learner, the prediction-time ratio, and where to see the other case. The summary explains why the ensemble was used or not. The demos use
 quick settings (5 Optuna trials per learner type and the light member set), so it finishes in about a minute on a
 laptop; `fde demo --trials 20 --members full` runs the settings evaluated in the paper. A progress bar shows the
 stage, the elapsed time and an estimate of the remaining time, and the result compares FDE with the best tuned
@@ -232,13 +244,52 @@ No row is used both to choose a model and to score it:
 
 1. `fde evaluate` and `fde demo` set aside a stratified share of the rows (20% by default) before fitting; these rows
    are used only for the held-out scores.
-2. On the training rows, 3 outer folds decide whether the ensemble is used. The decision is made on rows that each
-   fold's models have not seen (the cross-fitted acceptance rule).
-3. Inside every fold, the learners are tuned and the combiner is fitted on 3 inner folds, and every imputer, encoder
-   and scaler is fitted on its own training rows only.
+2. On balanced training rows, 3 outer folds decide whether the ensemble is used. The decision is made on rows that
+   each fold's models have not seen (the cross-fitted acceptance rule). Imbalanced data skip these folds.
+3. In every fit, the learners are tuned and the combiner is fitted on 3 inner folds, and every imputer, encoder and
+   scaler is fitted on its own training rows only.
 
 To compare FDE with another tool, score both on the same held-out rows. A score computed on rows that were also used
 for tuning comes out higher than the score on new data.
+
+## Checking the Fast claim
+
+FDE removes members in order of a fixed table of prediction costs, from the costliest, as long as the out-of-fold
+score of the full member set is kept. The option `--speed` shows what this does to prediction time on your data:
+
+```
+fde evaluate --data data.csv --target y --speed
+fde demo                                       # no data needed; the demo measures the times by default
+```
+
+After the usual held-out scores, FDE times four predictors built from the same fitted models on the same held-out rows:
+
+| Predictor | What it calls |
+|---|---|
+| FDE | the best tuned learner, the members kept by cost-aware pruning, and the combiner |
+| greedy selection | greedy ensemble selection (Caruana et al., 2004) over the same members: selection with replacement by Brier score on the same out-of-fold probabilities, started from the best tuned learner |
+| full member set | every member with the combiner, without pruning |
+| best tuned learner | one model |
+
+Each predictor is one call over all held-out rows on one CPU core: the process is pinned to one core on Linux, and the
+numerical libraries are limited to one thread on every system. After one warm-up call, the median of five calls
+(`--repeats`) is divided by the number of rows and reported in ms per 1,000 rows, with the score of each predictor on
+the same rows. Data preparation is included and fitting is not. A ratio of greedy to FDE time above 1 means that FDE
+predicts faster.
+
+Times depend on the machine, so the ratio on one core is the quantity to compare. In the accompanying paper, on the 43
+evaluation datasets on the ensemble route, the median ratio of greedy selection to FDE time was 3.34, and FDE was
+faster on 39. Greedy selection is faster when it keeps fewer or cheaper models; FDE then keeps a member that its score
+needs. When the route keeps the best tuned learner, every predictor reduces to that learner. In Python:
+
+```python
+from fde import FDEClassifier, speed_report
+clf = FDEClassifier(keep_candidates=True).fit(X_train, y_train)
+print(speed_report(clf, X_test, y_test))
+```
+
+`keep_candidates=True` keeps every fitted member for this comparison, so the saved model is larger; it does not change
+the predictions of FDE.
 
 ## Options
 
@@ -251,6 +302,8 @@ for tuning comes out higher than the score on new data.
 | `member_threads` | 4 | threads per extended member (Python API only) |
 | `device` (`--device`) | `cpu` | `gpu` trains XGBoost, CatBoost and the MLP on the first CUDA GPU (LightGBM stays on the CPU: its GPU mode was slower in our tests). Results can differ slightly from the CPU; see the note below |
 | `verbose` | 0 (1 on the command line) | 1 shows the system check and a progress bar with the stage and the remaining time; 2 also prints the report |
+| `keep_candidates` (`--speed`) | `False` | keeps every fitted member so that `speed_report` can compare prediction times; predictions are unchanged |
+| `--repeats` | 5 | timed calls per predictor with `--speed`; the median is reported |
 
 These defaults are the configuration evaluated in the accompanying paper.
 
@@ -263,10 +316,10 @@ The GPU option is offered for machines with few CPU cores; check the time on you
 
 ## Cost
 
-Fitting costs more than tuning one learner, because up to twelve learner types are tuned four times (once per outer
-fold and once on all rows). Prediction is cheap when the best tuned learner is kept: one model. When the ensemble is
-used, the best learner, 21 members (eight of them bagged over 3 folds, three models each) and the combiner all run,
-so prediction takes longer than with a single model.
+Fitting costs more than tuning one learner, because up to twelve learner types are tuned once on imbalanced data and four times
+on balanced data (once per outer fold and once on all rows). Prediction is cheap when the best tuned learner is kept: one model. When the ensemble is
+used, the best learner, the members kept by sizing (a median of 2 of 21 in the accompanying paper; bagged members hold
+three models each) and the combiner run. `--speed` measures this on your data.
 
 ## Citation
 

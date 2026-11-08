@@ -1,13 +1,17 @@
 """Command line: fde demo | fit | predict | evaluate.
 
-  fde demo [--members full|light] [--trials 5] [--jobs -1]   (evaluate on the breast cancer data shipped with
-              scikit-learn; no file or download needed; quick settings by default)
+  fde demo [--example imbalanced|breast-cancer] [--no-speed] [--members full|light] [--trials 5] [--jobs -1]
+              (no file or download needed; quick settings by default. The default example is imbalanced, where the
+              ensemble is used, and the prediction times are measured; breast-cancer shows the balanced case, where
+              the best tuned learner is kept)
 
   fde fit --data train.csv --target y --out model.fde [--seed 0] [--jobs -1] [--trials 20] [--members full|light]
   fde predict --model model.fde --data new.csv [--proba] [--out predictions.csv]
   fde evaluate --data data.csv --target y [--test-size 0.2] [--seed 0] ...   (holds out a stratified part of the
               data and scores FDE against the best tuned learner on it, reporting macro-F1, weighted-F1 and
               balanced accuracy; the run metric is whichever F1 column applies)
+  fde evaluate ... --speed, fde demo --speed   (also times, on the held-out rows, the FDE predictor against greedy
+              ensemble selection over the same members, the full member set, and the best tuned learner; see fde.speed)
 """
 import argparse, json, sys
 
@@ -20,7 +24,7 @@ def _read(path):
 def _clf(a):
     from .classifier import FDEClassifier
     return FDEClassifier(random_state=a.seed, n_jobs=a.jobs, trials=a.trials, members=a.members, device=a.device,
-                         verbose=0 if a.quiet else 1)
+                         verbose=0 if a.quiet else 1, keep_candidates=getattr(a, "speed", False))
 
 
 def _scores(y, p):
@@ -45,7 +49,9 @@ def _summary(r, test=None, n_test=None, saved=None):
     from rich.text import Text
     con, o, used = Console(highlight=False), r["options"], r["uses_ensemble"]
     n = r["models_in_predictor"]
-    head = (Text(f"Ensemble used ({n} models: best learner, members and combiner)", style="bold green") if used else
+    head = (Text(f"Ensemble used ({n} models: best learner, members and combiner)", style="bold green") if used and r.get("stack_kept", True) else
+            Text("Ensemble route: the stack was rejected, so the best tuned learner with the class-wise score adjustment is used (one model)",
+                 style="bold green") if used else
             Text("Best tuned learner kept (one model; the ensemble was not needed)", style="bold cyan"))
     parts = [head]
     if test:
@@ -68,10 +74,12 @@ def _summary(r, test=None, n_test=None, saved=None):
     g.add_row("Why", _why(r))
     con.print(g)
     steps = ([f"{n_test} rows were set aside before fitting and used only for the held-out scores."] if test else []) + [
-        "On the training rows, 3 outer folds decided whether the ensemble is used, judged on rows that each fold's "
-        "models had not seen.",
-        "Inside every fold, the learners were tuned and the combiner fitted on 3 inner folds; every imputer, encoder "
-        "and scaler was fitted on its own training rows only."]
+        ("The classes are balanced, so 3 outer folds of the training rows decided whether the ensemble is used, judged on "
+         "rows that each fold's models had not seen." if r["route"] == "acceptance_rule" else
+         "The classes are imbalanced, so the ensemble is used without outer folds."),
+        "In every fit, the learners were tuned and the combiner fitted on 3 inner folds, and the costliest members were dropped "
+        "while the score stayed at that of all members; every imputer, encoder and scaler was fitted on its own training "
+        "rows only."]
     con.print(f"\n[bold]How {'it was evaluated' if test else 'the model was chosen'}[/] [dim](no row is used both to choose a model and to score it)[/]")
     from rich.padding import Padding
     lst = Table.grid(padding=(0, 1)); lst.add_column(justify="right", style="dim"); lst.add_column(style="dim")
@@ -85,7 +93,7 @@ def _summary(r, test=None, n_test=None, saved=None):
 
 
 # share of runs that used the ensemble in the accompanying study (53 datasets x 5 seeds), by imbalance group
-STUDY = {"balanced": 8, "low": 54, "moderate": 83, "extreme": 83}
+STUDY = {"balanced": 8, "low": 96, "moderate": 99, "extreme": 99}
 GROUP = {"balanced": "balanced data (imbalance ratio below 3)", "low": "data with low imbalance (ratio 3 to 10)",
          "moderate": "data with moderate to extreme imbalance (ratio 10 or more)",
          "extreme": "data with moderate to extreme imbalance (ratio 10 or more)"}
@@ -93,6 +101,9 @@ GROUP = {"balanced": "balanced data (imbalance ratio below 3)", "low": "data wit
 
 def _why(r):
     """Plain-language reasons for the decision, from the cross-fitted scores of the training folds."""
+    if r["route"] == "ensemble":
+        return (f"The classes are imbalanced (ratio {r['imbalance_ratio']:.1f}), so FDE uses the ensemble. It built {r['models_built']} models and kept "
+                f"{r['models_in_predictor']}, dropping the costliest members while the out-of-fold score stayed at that of all of them.")
     cf, m = r["crossfit_scores"], METRIC[r["metric"]]
     ref, ens, d = cf["reference"], cf["ensemble"], r.get("decision")
     seen = (f"On training rows that each fold's models had not seen, the ensemble scored {ens:.4f} and the best tuned "
@@ -127,10 +138,80 @@ def _evaluate(X, y, a):
     p = clf.predict(X.iloc[te]); best = clf.model_["models"]["P1"]
     pb = clf.classes_[best.predict_proba(prepare_frame(X.iloc[te])[clf.columns_]).argmax(1)]
     test = {"fde": _scores(y[te], p), "best_tuned_learner": _scores(y[te], pb)}
+    speed = None
+    if getattr(a, "speed", False):
+        from .speed import speed_report
+        speed = speed_report(clf, X.iloc[te].reset_index(drop=True), y[te], repeats=a.repeats)
     if a.json:
-        print(json.dumps({"report": clf.report_, "test": test}, indent=1))
+        print(json.dumps({"report": clf.report_, "test": test, **({"speed": speed} if speed else {})}, indent=1))
     else:
         _summary(clf.report_, test, len(te))
+        if speed:
+            _speed_print(speed)
+        if getattr(a, "cmd", "") == "demo":
+            _demo_takeaway(clf.report_, test, speed, a.example)
+
+
+def _demo_takeaway(r, test, speed, example):
+    """Three lines that say what the demo has just shown."""
+    from rich.console import Console
+    from rich.panel import Panel
+    con = Console(highlight=False); m = "macro_f1" if r["metric"] == "macroF1" else "weighted_f1"; lab = METRIC[r["metric"]]
+    f, b = test["fde"][m], test["best_tuned_learner"][m]
+    lines = [f"1. Accuracy: on the held-out rows, FDE scores {f:.4f} {lab} against {b:.4f} for the best tuned learner"
+             + (" (the same model here, because the route kept it)." if not r["uses_ensemble"] else ".")]
+    if speed and r["uses_ensemble"]:
+        g = speed["ratio_greedy_to_fde"]
+        lines.append(f"2. Fast: FDE calls {speed['pipelines']['fde']['models']} models and predicts {g:.2f} times "
+                     + ("faster than" if g >= 1 else "as fast as") + " greedy ensemble selection over the same members"
+                     + f" (paper: median {speed['paper_reference']['median_ratio']:.2f} on {speed['paper_reference']['datasets']} datasets).")
+    elif speed:
+        lines.append("2. Fast: the route kept one model, which is the fastest predictor; see the imbalanced example for the ensemble.")
+    else:
+        lines.append("2. Fast: run the demo without --no-speed to compare prediction times with greedy ensemble selection.")
+    lines.append("3. Balanced data: fde demo --example breast-cancer shows FDE keeping the best tuned learner when the ensemble does not help."
+                 if example == "imbalanced" else
+                 "3. Imbalanced data: fde demo (default example) shows the ensemble in use and its prediction time.")
+    con.print(Panel("\n".join(lines), title="[bold]What this demo shows[/]", border_style="green", expand=False)); con.print()
+
+
+def _speed_print(s):
+    """Prediction times of the four predictors and how they were measured."""
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+    con = Console(highlight=False); P = s["pipelines"]; m = METRIC[s["metric"]]
+    t = Table(box=box.SIMPLE_HEAD, title=f"[bold]Prediction time on the {s['rows']} held-out rows[/]", title_justify="left")
+    for c, j in (("predictor", "left"), ("models", "right"), ("ms/1,000 rows", "right"), (m, "right")):
+        t.add_column(c, justify=j)
+    lab = {"fde": "FDE", "greedy": "greedy selection", "full": "full member set", "best": "best tuned learner"}
+    for k in ("fde", "greedy", "full", "best"):
+        r = P[k]; t.add_row(lab[k], str(r["models"]), f"{r['ms_per_1000_rows']:.1f}", f"{r['score']:.4f}" if "score" in r else "-")
+    con.print(t)
+    g, f = s["ratio_greedy_to_fde"], s["ratio_full_to_fde"]
+    if s["uses_ensemble"]:
+        con.print(f"[bold]Greedy selection / FDE time: {g:.2f}[/] ({'FDE faster' if g > 1 else 'greedy selection faster' if g < 1 else 'equal'}); "
+                  f"full member set / FDE: {f:.2f}. A ratio above 1 means FDE predicts faster.")
+    else:
+        con.print("[bold]The route kept the best tuned learner[/], so every predictor reduces to it and the times differ only by noise.")
+    ref = s["paper_reference"]
+    notes = [("Each predictor is one call over all held-out rows, timed on one CPU core" +
+              (" (the process was pinned to one core)" if s["pinned_to_one_core"] else " (numerical libraries limited to one thread; "
+               "pinning to one core is available on Linux)") + ": one warm-up call, then the median of the repeated calls, divided by "
+              "the number of rows. Data preparation is included; fitting is not."),
+             ("All four predictors use the same fitted models. Greedy ensemble selection (Caruana et al., 2004) chooses members with "
+              "replacement by Brier score on the same out-of-fold probabilities, starting from the best tuned learner."),
+             ("FDE removes members in order of a fixed table of prediction costs while the out-of-fold score of the full member set "
+              "is kept, so it is usually faster than greedy selection; greedy selection is faster when it keeps fewer or cheaper models, "
+              "and FDE then keeps a member that its score needs."),
+             (f"Reference from the accompanying paper: on {ref['datasets']} evaluation datasets on the ensemble route, the median ratio of "
+              f"greedy selection to FDE time was {ref['median_ratio']:.2f}, with FDE faster on {ref['faster']}. Times depend on the "
+              "machine; the ratio, measured on one core, is the comparable quantity.")]
+    from rich.padding import Padding
+    lst = Table.grid(padding=(0, 1)); lst.add_column(justify="right", style="dim"); lst.add_column(style="dim")
+    for i, x in enumerate(notes, 1):
+        lst.add_row(f"{i}.", x)
+    con.print("\n[bold]How the times were measured[/]"); con.print(Padding(lst, (0, 0, 0, 2))); con.print()
 
 
 def _common(s, trials=20, members="full"):
@@ -146,8 +227,15 @@ def _common(s, trials=20, members="full"):
     s.add_argument("--json", action="store_true", help="print the full report as JSON instead of the summary")
 
 
+def _speed_opts(s):
+    s.add_argument("--speed", action="store_true",
+                   help="also time, on the held-out rows and on one CPU core, the FDE predictor against greedy ensemble selection "
+                        "over the same members, the full member set and the best tuned learner (the 'Fast' claim)")
+    s.add_argument("--repeats", type=int, default=5, help="timed calls per predictor with --speed; the median is reported (default: 5)")
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="fde", description="Feasible Diverse Ensembles for tabular classification")
+    ap = argparse.ArgumentParser(prog="fde", description="FDE: Fast-Deployment Ensemble for imbalanced tabular classification")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, text in (("fit", "fit FDE and save the model"),
                        ("evaluate", "fit on part of the data, then score the holdout")):
@@ -160,12 +248,18 @@ def main(argv=None):
         else:
             s.add_argument("--test-size", type=float, default=0.2,
                            help="fraction of rows held out, stratified by class (default: 0.2)")
-    text = ("evaluate FDE on example data, no file or download needed; quick settings by default (5 trials, light "
-            "members). --example breast-cancer: the best tuned learner is enough; --example imbalanced: the ensemble is used")
+            _speed_opts(s)
+    text = ("show what FDE does on example data, no file or download needed; quick settings by default (5 trials, light "
+            "members). The default example is imbalanced: the ensemble is used and its prediction time is compared with greedy "
+            "ensemble selection. --example breast-cancer shows balanced data, where the best tuned learner is kept")
     s = sub.add_parser("demo", help=text, description=text); _common(s, trials=5, members="light")
-    s.add_argument("--example", choices=("breast-cancer", "imbalanced"), default="breast-cancer",
-                   help="breast-cancer: 569 rows, balanced classes; imbalanced: 2,000 synthetic rows, 10%% minority (default: breast-cancer)")
+    s.add_argument("--example", choices=("imbalanced", "breast-cancer"), default="imbalanced",
+                   help="imbalanced: 2,000 synthetic rows, 10%% minority; breast-cancer: 569 rows, balanced classes (default: imbalanced)")
     s.add_argument("--test-size", type=float, default=0.2, help="fraction of rows held out, stratified by class (default: 0.2)")
+    s.add_argument("--no-speed", dest="speed", action="store_false",
+                   help="skip the prediction-time comparison that the demo runs by default")
+    s.add_argument("--repeats", type=int, default=5, help="timed calls per predictor; the median is reported (default: 5)")
+    s.set_defaults(speed=True)
     s = sub.add_parser("predict", help="score new rows with a fitted model, as labels or probabilities",
                        description="score new rows with a fitted model, as labels or probabilities")
     s.add_argument("--model", required=True, help="model saved by fde fit")
