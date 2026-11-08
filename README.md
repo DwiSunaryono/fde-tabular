@@ -3,7 +3,7 @@ FDE is a machine learning framework designed to improve tabular classification t
 FDE combines multiple machine learning models, addresses class imbalance, and adaptively selects between ensemble predictions and the best-performing individual model.
 
 This repository provides the implementation, documentation, and experimental resources for FDE.
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23997869.svg)](https://doi.org/10.5281/zenodo.23997869)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23997868.svg)](https://doi.org/10.5281/zenodo.23997868)
 
 FDE builds a diverse ensemble around the best tuned single learner and keeps only as many members as its score requires.
 Imbalanced data receive the ensemble; balanced data receive it only when a cross-fitted acceptance rule supports a gain.
@@ -324,8 +324,9 @@ three models each) and the combiner run. `--speed` measures this on your data.
 ## Citation
 
 Please cite the accompanying article if you use FDE; the full reference will be added once it is published. The
-software itself is archived on Zenodo: version 1.0.0 has DOI
-[10.5281/zenodo.23997869](https://doi.org/10.5281/zenodo.23997869), and
+software itself is archived on Zenodo: version 1.1.0, the configuration evaluated in the accompanying paper, has DOI
+[10.5281/zenodo.24054150](https://doi.org/10.5281/zenodo.24054150) (version 1.0.0:
+[10.5281/zenodo.23997869](https://doi.org/10.5281/zenodo.23997869)), and
 [10.5281/zenodo.23997868](https://doi.org/10.5281/zenodo.23997868) always points to the latest version. See `CITATION.cff`.
 
 ## License
