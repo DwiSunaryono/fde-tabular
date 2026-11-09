@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+- Benchmark artifacts of the accompanying paper in `benchmark/`: the 53 evaluation datasets (loader, specifications,
+  and the 16 open-data tables with their sources and licences), a SHA-256 hash of the TRAIN/TEST split of every run with
+  `check_splits.py`, which regenerates and compares the splits, the scores of FDE and of the eight comparators of
+  Table 4 in all 265 runs, the prediction-time records of Table 16, the scripts and environments of the AutoML
+  comparators in `benchmark/comparators/`, with `make_run_records.py`, which prepares their input from the archive, and `make_tables.py`, which recomputes Table 4 from these scores.
+- The package code is unchanged from 1.1.0; results are unchanged.
+
 ## 1.1.0
 - Class-ratio route: with a majority-to-minority ratio of 3 or more in the training rows, the ensemble is used without
   outer folds, so one fit set is built instead of four. Balanced data keep the cross-fitted acceptance rule.

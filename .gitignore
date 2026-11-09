@@ -5,3 +5,8 @@ build/
 dist/
 .pytest_cache/
 *.fde
+
+# output of benchmark/comparators/make_run_records.py and of the comparator scripts
+benchmark/comparators/conf2_final*/
+benchmark/comparators/askl_data/
+benchmark/comparators/askl_out/

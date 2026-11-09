@@ -321,6 +321,12 @@ on balanced data (once per outer fold and once on all rows). Prediction is cheap
 used, the best learner, the members kept by sizing (a median of 2 of 21 in the accompanying paper; bagged members hold
 three models each) and the combiner run. `--speed` measures this on your data.
 
+## Benchmark artifacts
+
+The folder [`benchmark/`](benchmark/) holds the evaluation of the accompanying paper: the 53 datasets and their loader,
+the split of every run, the scores of FDE and of every comparator in all 265 runs, the prediction-time records, and a
+script that recomputes the main comparison table. See [`benchmark/README.md`](benchmark/README.md).
+
 ## Citation
 
 Please cite the accompanying article if you use FDE; the full reference will be added once it is published. The

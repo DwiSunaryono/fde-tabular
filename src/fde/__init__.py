@@ -1,5 +1,5 @@
 """FDE: Fast-Deployment Ensemble for imbalanced tabular classification."""
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __all__ = ["FDEClassifier", "speed_report", "__version__"]
 
 

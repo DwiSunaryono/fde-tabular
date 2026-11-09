@@ -1,0 +1,13 @@
+dataset,test_rows,models_fde,models_greedy,fde_ms_per_1000_rows,greedy_ms_per_1000_rows
+glass,43,2,7,58.019,2323.949
+oil,188,2,5,32.779,399.111
+depression_2020,286,7,1,45.943,13.767
+MIC,330,11,8,86.414,302.579
+kc1,422,2,2,32.322,36.625
+football-player-position,723,2,11,18.069,171.954
+spambase,921,5,4,22.895,216.449
+HMEQ_Data,1192,7,9,223.075,273.484
+Bank_Customer_Churn,2000,2,11,6.33,249.327
+jm1,2177,2,8,17.882,369.836
+ofsted-schools,2914,5,2,39.015,92.477
+hmda-vt-2022,4047,2,6,22.799,51.157

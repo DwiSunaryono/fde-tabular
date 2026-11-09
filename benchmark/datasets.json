@@ -1,0 +1,326 @@
+{
+ "analcatdata_halloffame": {
+  "source": "openml",
+  "id": 966
+ },
+ "anneal": {
+  "source": "openml",
+  "id": 989
+ },
+ "BankChurners": {
+  "source": "kaggle",
+  "id": "BankChurners",
+  "file": "sakshigoyal7_credit-card-customers/BankChurners.csv",
+  "target": "Attrition_Flag",
+  "drop": [
+   "CLIENTNUM",
+   "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_1",
+   "Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_2"
+  ],
+  "rule": null
+ },
+ "Bioresponse": {
+  "source": "openml",
+  "id": 45019
+ },
+ "BNP_Paribas_Cardif_Claims_Management": {
+  "source": "openml",
+  "id": 46856,
+  "drop": [
+   "ID"
+  ],
+  "subsample": 100000
+ },
+ "brfss2020-heart": {
+  "source": "kaggle",
+  "id": "brfss2020-heart",
+  "file": "kamilpytlak_personal-key-indicators-of-heart-disease/2020/heart_2020_cleaned.csv",
+  "target": "HeartDisease",
+  "drop": [],
+  "rule": null,
+  "subsample": 100000
+ },
+ "cervical_cancer_biopsy": {
+  "source": "uci",
+  "id": 383,
+  "target": "Biopsy",
+  "drop": [
+   "Hinselmann",
+   "Schiller",
+   "Citology"
+  ]
+ },
+ "cfpb-complaints": {
+  "source": "open_data",
+  "id": "cfpb-complaints"
+ },
+ "chicago-crashes": {
+  "source": "open_data",
+  "id": "chicago-crashes"
+ },
+ "covertype": {
+  "source": "openml",
+  "id": 1596,
+  "subsample": 100000
+ },
+ "cqc-ratings": {
+  "source": "open_data",
+  "id": "cqc-ratings"
+ },
+ "Credit_Risk_Modeling": {
+  "source": "openml",
+  "id": 46519,
+  "drop": [
+   "prospectid",
+   "credit_score"
+  ]
+ },
+ "dol-perm": {
+  "source": "open_data",
+  "id": "dol-perm"
+ },
+ "Dota2-Games-Results-Data-Set": {
+  "source": "openml",
+  "id": 45563,
+  "subsample": 100000
+ },
+ "dry_bean": {
+  "source": "uci",
+  "id": 602,
+  "target": "Class",
+  "drop": []
+ },
+ "early_stage_diabetes": {
+  "source": "uci",
+  "id": 529,
+  "target": "class",
+  "drop": []
+ },
+ "faa-wildlife": {
+  "source": "open_data",
+  "id": "faa-wildlife"
+ },
+ "fhrs-ratings": {
+  "source": "open_data",
+  "id": "fhrs-ratings"
+ },
+ "freMTPL2freq": {
+  "source": "kaggle",
+  "id": "freMTPL2freq",
+  "file": "floser_french-motor-claims-datasets-fremtpl2freq/freMTPL2freq.csv",
+  "target": "ClaimNb",
+  "drop": [
+   "IDpol"
+  ],
+  "rule": "positive",
+  "subsample": 100000
+ },
+ "Give-Me-Some-Credit-Sampled": {
+  "source": "openml",
+  "id": 46468
+ },
+ "glioma_grading": {
+  "source": "uci",
+  "id": 759,
+  "target": "Grade",
+  "drop": []
+ },
+ "IEEE-CIS_Fraud_Detection": {
+  "source": "openml",
+  "id": 46858,
+  "drop": [
+   "TransactionID",
+   "TransactionDT"
+  ],
+  "subsample": 100000
+ },
+ "ilpd": {
+  "source": "uci",
+  "id": 225,
+  "target": "Selector",
+  "drop": []
+ },
+ "iranian_churn": {
+  "source": "uci",
+  "id": 563,
+  "target": "Churn",
+  "drop": [
+   "Status"
+  ]
+ },
+ "kick": {
+  "source": "openml",
+  "id": 41162
+ },
+ "LT-Vehicle-Loan-Default-Prediction": {
+  "source": "openml",
+  "id": 46430,
+  "drop": [
+   "employee_code_id",
+   "current_pincode_id",
+   "date.of.birth",
+   "disbursaldate",
+   "UniqueID"
+  ],
+  "subsample": 100000
+ },
+ "maib-occurrences": {
+  "source": "open_data",
+  "id": "maib-occurrences"
+ },
+ "mammographic_mass": {
+  "source": "uci",
+  "id": 161,
+  "target": "Severity",
+  "drop": [
+   "BI-RADS"
+  ]
+ },
+ "Midwest_Survey": {
+  "source": "openml",
+  "id": 42530,
+  "drop": [
+   "ZIP_Code"
+  ],
+  "target_dropna": "Location_(Census_Region)"
+ },
+ "msha-accidents": {
+  "source": "open_data",
+  "id": "msha-accidents"
+ },
+ "noaa-storm-2025": {
+  "source": "open_data",
+  "id": "noaa-storm-2025"
+ },
+ "npha_doctor_visits": {
+  "source": "uci",
+  "id": 936,
+  "target": "Number_of_Doctors_Visited",
+  "drop": []
+ },
+ "ntsb-events": {
+  "source": "open_data",
+  "id": "ntsb-events"
+ },
+ "nyc-restaurants": {
+  "source": "open_data",
+  "id": "nyc-restaurants"
+ },
+ "ofsted-childcare": {
+  "source": "open_data",
+  "id": "ofsted-childcare"
+ },
+ "okcupid_stem": {
+  "source": "openml",
+  "id": 45067
+ },
+ "Otto-Group-Product-Classification-Challenge": {
+  "source": "openml",
+  "id": 45548
+ },
+ "page-blocks": {
+  "source": "openml",
+  "id": 1021
+ },
+ "pc4": {
+  "source": "openml",
+  "id": 1049
+ },
+ "phmsa-hazmat": {
+  "source": "open_data",
+  "id": "phmsa-hazmat"
+ },
+ "raisin": {
+  "source": "uci",
+  "id": 850,
+  "target": "Class",
+  "drop": []
+ },
+ "rice_cammeo_osmancik": {
+  "source": "uci",
+  "id": 545,
+  "target": "Class",
+  "drop": []
+ },
+ "secom": {
+  "source": "uci",
+  "id": 179,
+  "target": "class",
+  "drop": [
+   "timestamp"
+  ]
+ },
+ "sfts-mortality": {
+  "source": "open_data",
+  "id": "sfts-mortality"
+ },
+ "soybean": {
+  "source": "openml",
+  "id": 1023
+ },
+ "student_entrance_exam": {
+  "source": "uci",
+  "id": 582,
+  "target": "Performance",
+  "drop": []
+ },
+ "travel-insurance": {
+  "source": "kaggle",
+  "id": "travel-insurance",
+  "file": "mhdzahier_travel-insurance/travel insurance.csv",
+  "target": "Claim",
+  "drop": [],
+  "rule": null
+ },
+ "tuandromd": {
+  "source": "open_data",
+  "id": "tuandromd"
+ },
+ "uk-road-accidents": {
+  "source": "kaggle",
+  "id": "uk-road-accidents",
+  "file": "devansodariya_road-accident-united-kingdom-uk-dataset/UK_Accident.csv",
+  "target": "Accident_Severity",
+  "drop": [
+   "Unnamed: 0",
+   "Accident_Index",
+   "Number_of_Casualties",
+   "Did_Police_Officer_Attend_Scene_of_Accident",
+   "Date",
+   "Time",
+   "LSOA_of_Accident_Location"
+  ],
+  "rule": null,
+  "subsample": 100000
+ },
+ "vehicle-claim-fraud": {
+  "source": "kaggle",
+  "id": "vehicle-claim-fraud",
+  "file": "shivamb_vehicle-claim-fraud-detection/fraud_oracle.csv",
+  "target": "FraudFound_P",
+  "drop": [
+   "PolicyNumber"
+  ],
+  "rule": null
+ },
+ "website_phishing": {
+  "source": "uci",
+  "id": 379,
+  "target": "Result",
+  "drop": []
+ },
+ "wns-promotion": {
+  "source": "kaggle",
+  "id": "wns-promotion",
+  "file": "arashnic_hr-ana/train.csv",
+  "target": "is_promoted",
+  "drop": [
+   "employee_id"
+  ],
+  "rule": null
+ },
+ "xylella-puglia": {
+  "source": "open_data",
+  "id": "xylella-puglia"
+ }
+}
