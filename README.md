@@ -153,6 +153,35 @@ to turn off the progress messages (they go to the standard error stream).
 Text columns can be left as they are: every learner imputes and encodes them using only its own training rows, and
 treats missing values the same way.
 
+## Practical guidance
+
+A performance-cost trade-off is the gain given up in exchange for faster prediction; a user makes this choice through
+the member set. This section is the full version of Appendix G of the accompanying paper.
+
+- **Input.** A labeled table in CSV or Parquet format with one target column is required, and no diagnosis of class
+  imbalance is needed, since the route is computed from the training rows.
+- **Example of use.** With `pip install fde-tabular` in place, a predictor is fitted by `fde fit` from a training table
+  and the name of its target column, and new rows are scored by `fde predict`. The methods `fit`, `predict`, and
+  `predict_proba` are provided by `FDEClassifier` in Python.
+- **Settings.** By default, `fde fit` uses the settings of the paper, with 20 trials and the full member set, and every
+  split, search, and member is fixed by `--seed`. The option `--device gpu` runs the fit on a GPU, which can cause small
+  changes in results.
+- **What is reported.** Each fit reports the route, the number of models built, kept, and called at prediction, the
+  best tuned learner, and, on balanced data, the decision of the acceptance rule. In addition, `fde evaluate` scores FDE
+  against the best tuned learner on a held-out stratified part of the data. The stored score of an audited evaluation
+  run was reproduced by the package on the reference hardware (paper, Appendix I).
+- **Checking prediction time.** The command `fde demo`, without options, fits FDE on a synthetic imbalanced table and
+  times, on held-out rows and one CPU core, the FDE predictor against greedy ensemble selection over the same members,
+  the full member set, and the best tuned learner, with the protocol of Section IV-F of the paper; `fde evaluate --speed`
+  does the same on a user table. Times depend on the machine, so the ratio of greedy to FDE time is the quantity to
+  compare.
+- **Where care is needed.** Fit time can be long on data with many features; on balanced data the best tuned learner
+  is retained in most runs, so a large gain should not be expected there; and a different member subset can be
+  selected by a fit on another processor (paper, Appendix I).
+- **Member set and cost.** A median of 3 models of the 22 built is already kept by cost-aware pruning. Large-budget
+  GBDTs, the MLP, and large forests are also skipped by the option `--members light`, which shortens fitting; the
+  scores of the paper refer to the full member set.
+
 ## Examples
 
 Each example runs as it is (`pip install fde-tabular` first). Times are for a 32-core laptop; with fewer cores they
