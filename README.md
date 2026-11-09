@@ -324,14 +324,16 @@ three models each) and the combiner run. `--speed` measures this on your data.
 ## Benchmark artifacts
 
 The folder [`benchmark/`](benchmark/) holds the evaluation of the accompanying paper: the 53 datasets and their loader,
-the split of every run, the scores of FDE and of every comparator in all 265 runs, the prediction-time records, and a
-script that recomputes the main comparison table. See [`benchmark/README.md`](benchmark/README.md).
+a hash of the split of every run, the scores of FDE and of the eight comparators of the main table in all 265 runs, the
+prediction-time records, the scripts and environments of the AutoML comparators, and a script that recomputes the main
+comparison table. See [`benchmark/README.md`](benchmark/README.md).
 
 ## Citation
 
 Please cite the accompanying article if you use FDE; the full reference will be added once it is published. The
-software itself is archived on Zenodo: version 1.1.0, the configuration evaluated in the accompanying paper, has DOI
-[10.5281/zenodo.24054150](https://doi.org/10.5281/zenodo.24054150) (version 1.0.0:
+software itself is archived on Zenodo: version 1.1.1, the configuration evaluated in the accompanying paper together
+with its benchmark artifacts, has DOI [10.5281/zenodo.24066927](https://doi.org/10.5281/zenodo.24066927) (version 1.1.0:
+[10.5281/zenodo.24054150](https://doi.org/10.5281/zenodo.24054150); version 1.0.0:
 [10.5281/zenodo.23997869](https://doi.org/10.5281/zenodo.23997869)), and
 [10.5281/zenodo.23997868](https://doi.org/10.5281/zenodo.23997868) always points to the latest version. See `CITATION.cff`.
 
