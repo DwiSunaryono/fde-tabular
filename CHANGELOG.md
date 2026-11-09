@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.2
+- `fde demo` now checks the prediction time on five synthetic imbalanced tables and reports the median ratio of greedy
+  ensemble selection to FDE time and the number of tables on which FDE is faster, as the paper reports it over
+  datasets; a single table can go either way. The main example is shown and timed first, then the check runs with a
+  progress bar. `--tables N` sets the number of tables (for example `--tables 100`, shown in groups of five), and
+  `--quick` keeps the main example only.
+- The method, its defaults, and the results are unchanged from 1.1.1.
+
 ## 1.1.1
 - Benchmark artifacts of the accompanying paper in `benchmark/`: the 53 evaluation datasets (loader, specifications,
   and the 16 open-data tables with their sources and licences), a SHA-256 hash of the TRAIN/TEST split of every run with

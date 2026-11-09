@@ -1,6 +1,6 @@
 """Command line: fde demo | fit | predict | evaluate.
 
-  fde demo [--example imbalanced|breast-cancer] [--no-speed] [--members full|light] [--trials 5] [--jobs -1]
+  fde demo [--example imbalanced|breast-cancer] [--tables 5] [--quick] [--no-speed] [--members full|light] [--trials 5] [--jobs -1]
               (no file or download needed; quick settings by default. The default example is imbalanced, where the
               ensemble is used, and the prediction times are measured; breast-cancer shows the balanced case, where
               the best tuned learner is kept)
@@ -142,17 +142,120 @@ def _evaluate(X, y, a):
     if getattr(a, "speed", False):
         from .speed import speed_report
         speed = speed_report(clf, X.iloc[te].reset_index(drop=True), y[te], repeats=a.repeats)
+    check = None
+    want_check = (bool(speed) and getattr(a, "cmd", "") == "demo" and a.example == "imbalanced"
+                  and not getattr(a, "quick", False) and getattr(a, "tables", 1) > 1)
+    if want_check and a.json:
+        check = _speed_check(a, speed)
     if a.json:
-        print(json.dumps({"report": clf.report_, "test": test, **({"speed": speed} if speed else {})}, indent=1))
+        print(json.dumps({"report": clf.report_, "test": test, **({"speed": speed} if speed else {}),
+                          **({"speed_check": check} if check else {})}, indent=1))
     else:
         _summary(clf.report_, test, len(te))
         if speed:
             _speed_print(speed)
+        if want_check:
+            check = _speed_check(a, speed)
+            _speed_check_print(check)
         if getattr(a, "cmd", "") == "demo":
-            _demo_takeaway(clf.report_, test, speed, a.example)
+            _demo_takeaway(clf.report_, test, speed, a.example, check)
 
 
-def _demo_takeaway(r, test, speed, example):
+DEMO_SETS = [(20, 0.10, 1), (15, 0.15, 2), (30, 0.08, 3), (25, 0.12, 4), (20, 0.20, 5),       # columns, minority share, seed
+             (40, 0.10, 6), (12, 0.18, 7), (35, 0.06, 8), (18, 0.12, 9), (28, 0.15, 10)]
+GROUP_SIZE = 5
+
+
+def _demo_set(k):
+    """Settings of demo table k (0-based): the ten listed above, then columns and minority share in turn, seed k + 1."""
+    if k < len(DEMO_SETS):
+        return DEMO_SETS[k]
+    return (12 + (7 * k) % 31, (0.06, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20)[k % 7], k + 1)
+
+
+def _demo_data(n_features, minority, seed):
+    """One synthetic imbalanced table of 2,000 rows; the first set is the main example of the demo."""
+    import numpy as np
+    import pandas as pd
+    from sklearn.datasets import make_classification
+    Xa, ya = make_classification(n_samples=2000, n_features=n_features, n_informative=6, n_redundant=4,
+                                 weights=[1 - minority, minority], flip_y=0.02, class_sep=0.8, random_state=seed)
+    return pd.DataFrame(Xa, columns=[f"x{i}" for i in range(n_features)]), np.where(ya == 1, "minority", "majority")
+
+
+def _speed_check(a, first):
+    """Prediction-time comparison with greedy ensemble selection on the demo tables (five by default), as the paper reports it: the
+    median ratio over datasets, since a single dataset can go either way (FDE was slower on 4 of the paper's 43)."""
+    import numpy as np
+    import pandas as pd
+    from sklearn.model_selection import train_test_split
+    from .classifier import FDEClassifier
+    from .speed import speed_report
+    n_tables = max(1, a.tables)
+    rows = [{"columns": DEMO_SETS[0][0], "minority": DEMO_SETS[0][1], "fde_models": first["pipelines"]["fde"]["models"],
+             "greedy_models": first["pipelines"]["greedy"]["models"], "ratio": first["ratio_greedy_to_fde"]}]
+    import contextlib
+    bar = contextlib.nullcontext(None)
+    if not a.quiet:
+        from rich.console import Console
+        from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+        bar = Progress(SpinnerColumn(), TextColumn("[bold cyan]fde[/] prediction-time check"), BarColumn(), MofNCompleteColumn(),
+                       TextColumn("{task.description}"), TimeElapsedColumn(), console=Console(stderr=True), transient=True)
+    with bar as prog:
+        task = prog.add_task("table 1 (the example above) done", total=n_tables, completed=1) if prog else None
+        for k in range(2, n_tables + 1):
+            nf, mino, seed = _demo_set(k - 1)
+            if prog:
+                prog.update(task, description=f"table {k}: fitting ({nf} columns, {mino:.0%} minority)")
+            X, y = _demo_data(nf, mino, seed); y = pd.Series(y).astype(str).to_numpy()
+            tr, te = train_test_split(np.arange(len(y)), test_size=a.test_size, stratify=y, random_state=a.seed)
+            clf = FDEClassifier(random_state=a.seed, n_jobs=a.jobs, trials=a.trials, members=a.members, device=a.device,
+                                verbose=0, keep_candidates=True).fit(X.iloc[tr], y[tr])
+            if prog:
+                prog.update(task, description=f"table {k}: timing the four predictors")
+            sp = speed_report(clf, X.iloc[te].reset_index(drop=True), y[te], repeats=a.repeats)
+            rows.append({"columns": nf, "minority": mino, "fde_models": sp["pipelines"]["fde"]["models"],
+                         "greedy_models": sp["pipelines"]["greedy"]["models"], "ratio": sp["ratio_greedy_to_fde"],
+                         "ensemble": sp["uses_ensemble"]})
+            if prog:
+                prog.advance(task)
+    r = [x["ratio"] for x in rows]
+    return {"tables": rows, "median_ratio": float(np.median(r)), "faster": int(sum(x > 1 for x in r)), "n": len(r),
+            "paper_reference": first["paper_reference"]}
+
+
+def _speed_check_print(c):
+    """The tables in groups of five, each with its median, then the median over all tables."""
+    import numpy as np
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+    con = Console(highlight=False); T = c["tables"]
+    for g0 in range(0, len(T), GROUP_SIZE):
+        part = T[g0:g0 + GROUP_SIZE]; r = [x["ratio"] for x in part]
+        t = Table(box=box.SIMPLE_HEAD, title=f"[bold]Prediction-time check, tables {g0 + 1}-{g0 + len(part)} of {len(T)}[/]",
+                  title_justify="left")
+        for col, j in (("table", "right"), ("columns", "right"), ("minority", "right"), ("FDE models", "right"),
+                       ("greedy models", "right"), ("greedy / FDE time", "right")):
+            t.add_column(col, justify=j)
+        for i, x in enumerate(part, g0 + 1):
+            g = x["ratio"]
+            t.add_row(str(i), str(x["columns"]), f"{x['minority']:.0%}", str(x["fde_models"]), str(x["greedy_models"]),
+                      f"[green]{g:.2f}[/]" if g > 1 else f"[red]{g:.2f}[/]")
+        con.print(t)
+        con.print(f"  Median of tables {g0 + 1}-{g0 + len(part)}: [bold]{float(np.median(r)):.2f}[/]; FDE faster on "
+                  f"{sum(x > 1 for x in r)} of {len(r)}.\n")
+    ref = c["paper_reference"]
+    con.print(f"[bold]Over all {c['n']} tables: median greedy / FDE time {c['median_ratio']:.2f}; FDE faster on {c['faster']} of {c['n']}.[/]")
+    con.print("Table 1 is the example above. A single table can go either way: greedy selection is faster when it keeps fewer "
+              "or cheaper models, so the median over tables is the quantity to read, as in the paper "
+              f"({ref['median_ratio']:.2f} on {ref['datasets']} datasets, FDE faster on {ref['faster']}). These quick tables use the "
+              "light member set, whose members have similar prediction costs; ordering by cost matters most when costly members "
+              "are present, as in the paper's full member set on real datasets.")
+    con.print()
+
+
+def _demo_takeaway(r, test, speed, example, check=None):
     """Three lines that say what the demo has just shown."""
     from rich.console import Console
     from rich.panel import Panel
@@ -160,7 +263,11 @@ def _demo_takeaway(r, test, speed, example):
     f, b = test["fde"][m], test["best_tuned_learner"][m]
     lines = [f"1. Accuracy: on the held-out rows, FDE scores {f:.4f} {lab} against {b:.4f} for the best tuned learner"
              + (" (the same model here, because the route kept it)." if not r["uses_ensemble"] else ".")]
-    if speed and r["uses_ensemble"]:
+    if check:
+        lines.append(f"2. Fast: over {check['n']} synthetic tables, FDE predicts {check['median_ratio']:.2f} times faster than greedy "
+                     f"ensemble selection over the same members (median; FDE faster on {check['faster']} of {check['n']}; paper: median "
+                     f"{check['paper_reference']['median_ratio']:.2f} on {check['paper_reference']['datasets']} datasets).")
+    elif speed and r["uses_ensemble"]:
         g = speed["ratio_greedy_to_fde"]
         lines.append(f"2. Fast: FDE calls {speed['pipelines']['fde']['models']} models and predicts {g:.2f} times "
                      + ("faster than" if g >= 1 else "as fast as") + " greedy ensemble selection over the same members"
@@ -251,11 +358,17 @@ def main(argv=None):
             _speed_opts(s)
     text = ("show what FDE does on example data, no file or download needed; quick settings by default (5 trials, light "
             "members). The default example is imbalanced: the ensemble is used and its prediction time is compared with greedy "
-            "ensemble selection. --example breast-cancer shows balanced data, where the best tuned learner is kept")
+            "ensemble selection, then on five synthetic tables (--tables N), shown in groups of five, whose median ratio is "
+            "reported as in the paper (--quick keeps the main example only). --example breast-cancer shows balanced data, where the best tuned learner is kept")
     s = sub.add_parser("demo", help=text, description=text); _common(s, trials=5, members="light")
     s.add_argument("--example", choices=("imbalanced", "breast-cancer"), default="imbalanced",
                    help="imbalanced: 2,000 synthetic rows, 10%% minority; breast-cancer: 569 rows, balanced classes (default: imbalanced)")
     s.add_argument("--test-size", type=float, default=0.2, help="fraction of rows held out, stratified by class (default: 0.2)")
+    s.add_argument("--tables", type=int, default=5,
+                   help="synthetic tables in the prediction-time check, the main example included; the median over them is "
+                        "reported, in groups of five (default: 5; for example --tables 100 for a wider check)")
+    s.add_argument("--quick", action="store_true",
+                   help="time only the main example, the same as --tables 1 (faster demo)")
     s.add_argument("--no-speed", dest="speed", action="store_false",
                    help="skip the prediction-time comparison that the demo runs by default")
     s.add_argument("--repeats", type=int, default=5, help="timed calls per predictor; the median is reported (default: 5)")
@@ -291,12 +404,7 @@ def main(argv=None):
             d = load_breast_cancer(as_frame=True); X, y = d.data, d.target.map(dict(enumerate(d.target_names)))
             what = "breast cancer data (569 rows, 30 columns, 2 balanced classes)"
         else:
-            import numpy as np
-            import pandas as pd
-            from sklearn.datasets import make_classification
-            Xa, ya = make_classification(n_samples=2000, n_features=20, n_informative=6, n_redundant=4, weights=[0.9, 0.1],
-                                         flip_y=0.02, class_sep=0.8, random_state=1)
-            X, y = pd.DataFrame(Xa, columns=[f"x{i}" for i in range(20)]), np.where(ya == 1, "minority", "majority")
+            X, y = _demo_data(*DEMO_SETS[0])
             what = "synthetic imbalanced data (2,000 rows, 20 columns, 10% minority class)"
         if not a.quiet:
             from rich.console import Console

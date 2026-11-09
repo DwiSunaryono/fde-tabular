@@ -117,10 +117,13 @@ fde demo --example breast-cancer    # balanced data: the best tuned learner alon
 
 The first demo evaluates FDE on synthetic data with a 10% minority class, the second on the breast cancer data that
 ships with scikit-learn (no file or download needed for either). The first demo also times the FDE predictor against
-greedy ensemble selection over the same members (see [Checking the Fast claim](#checking-the-fast-claim); `--no-speed`
-skips this), and both end with a short panel, *What this demo shows*: the held-out score of FDE against the best tuned
-learner, the prediction-time ratio, and where to see the other case. The summary explains why the ensemble was used or not. The demos use
-quick settings (5 Optuna trials per learner type and the light member set), so it finishes in about a minute on a
+greedy ensemble selection over the same members, and then repeats this comparison on five synthetic imbalanced tables
+and reports the median ratio and the number of tables on which FDE is faster, as the paper does over datasets, since a
+single table can go either way (see [Checking the Fast claim](#checking-the-fast-claim); `--tables N` sets the number of
+tables, for example `--tables 100`, `--quick` keeps only the main table, and `--no-speed` skips the timing). Both demos
+end with a short panel, *What this demo shows*: the held-out score of FDE against the best tuned learner, the
+prediction-time ratio, and where to see the other case. The summary explains why the ensemble was used or not. The demos use
+quick settings (5 Optuna trials per learner type and the light member set), so the first finishes in one to two minutes on a
 laptop; `fde demo --trials 20 --members full` runs the settings evaluated in the paper. A progress bar shows the
 stage, the elapsed time and an estimate of the remaining time, and the result compares FDE with the best tuned
 learner on held-out rows.
@@ -172,7 +175,8 @@ the member set. This section is the full version of Appendix G of the accompanyi
   run was reproduced by the package on the reference hardware (paper, Appendix I).
 - **Checking prediction time.** The command `fde demo`, without options, fits FDE on a synthetic imbalanced table and
   times, on held-out rows and one CPU core, the FDE predictor against greedy ensemble selection over the same members,
-  the full member set, and the best tuned learner, with the protocol of Section IV-F of the paper; `fde evaluate --speed`
+  the full member set, and the best tuned learner, with the protocol of Section IV-F of the paper, and then reports the
+  median ratio over five synthetic tables; `fde evaluate --speed`
   does the same on a user table. Times depend on the machine, so the ratio of greedy to FDE time is the quantity to
   compare.
 - **Where care is needed.** Fit time can be long on data with many features; on balanced data the best tuned learner
