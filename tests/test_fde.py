@@ -89,3 +89,36 @@ def test_speed_report_on_holdout():
     assert set(s["pipelines"]) == {"fde", "greedy", "full", "best"} and s["ratio_greedy_to_fde"] > 0
     assert s["pipelines"]["fde"]["models"] == clf.report_["models_called_at_prediction"]
     assert (clf.predict(X.iloc[300:]) == clf.classes_[clf.predict_proba(X.iloc[300:]).argmax(1)]).all()
+
+
+@pytest.mark.slow
+def test_cross_validate_scores_every_row_once():
+    from fde import cross_validate
+    X, y = _data()
+    r = cross_validate(X, y, cv=3, random_state=0, n_jobs=2, trials=2, members="light")
+    assert r["cv"] == 3 and len(r["folds"]) == 3
+    assert sum(f["rows"] for f in r["folds"]) == len(y)
+    for p in ("fde", "best_tuned_learner"):
+        vals = [f[p]["macro_f1"] for f in r["folds"]]
+        assert abs(r["mean"][p]["macro_f1"] - np.mean(vals)) < 1e-4
+    with pytest.raises(ValueError):
+        cross_validate(X, y, cv=1)
+
+
+def test_demo_data_shipped():
+    from fde.cli import _demo_sfts
+    X, y = _demo_sfts()
+    assert X.shape == (788, 30) and set(y) == {"died", "survived"} and (y == "died").sum() == 96
+
+
+def test_mlp_in_separate_process_matches(monkeypatch):
+    # the macOS path (training in a separate process, numpy forward pass) gives the same probabilities
+    from fde import _torch_mlp as tm, extended
+    rng = np.random.default_rng(0); A = rng.normal(size=(300, 10)).astype("float32"); y = (A[:, 0] > 0).astype(int)
+    net = tm.train(A[:240], y[:240], A[240:], y[240:], 2, 0, 2)
+    monkeypatch.setattr(extended, "ISOLATE_TORCH", True)
+    W = extended._mlp(A[:240], y[:240], A[240:], y[240:], 2, 0, 2)
+    import torch
+    with torch.no_grad():
+        p = torch.softmax(net(torch.tensor(A)), 1).numpy()
+    assert np.abs(tm.forward(W, A) - p).max() < 1e-5

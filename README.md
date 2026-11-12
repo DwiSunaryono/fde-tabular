@@ -78,7 +78,7 @@ found for fde-tabular"); the commands above use Python 3.12 from Homebrew. Light
 <details>
 <summary><b>Windows (Command Prompt)</b></summary>
 
-Type or paste **one line at a time** and press Enter after each line (if `py` is not found, use `python` instead):
+Type or paste **one line at a time** and press Enter after each line:
 
 ```bat
 py -m venv %USERPROFILE%\fde-env
@@ -87,6 +87,13 @@ python -m pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install fde-tabular
 fde demo
+```
+
+If the first line gives an error, for example "'py' is not recognized" or "Unable to create process using ...", use
+`python` instead of `py`:
+
+```bat
+python -m venv %USERPROFILE%\fde-env
 ```
 
 In PowerShell, activate with `$env:USERPROFILE\fde-env\Scripts\Activate.ps1` instead (if scripts are blocked, run
@@ -111,22 +118,25 @@ combiners) with an estimate of the remaining time.
 ## Quick start
 
 ```bash
-fde demo                            # imbalanced data: the ensemble is used, and its prediction time is measured
+fde demo                            # real imbalanced data: the ensemble is used, and its prediction time is measured
 fde demo --example breast-cancer    # balanced data: the best tuned learner alone is enough
+fde demo --cv 5                     # outer 5-fold cross-validation of the first example
 ```
 
-The first demo evaluates FDE on synthetic data with a 10% minority class, the second on the breast cancer data that
-ships with scikit-learn (no file or download needed for either). The first demo also times the FDE predictor against
-greedy ensemble selection over the same members, and then repeats this comparison on five synthetic imbalanced tables
-and reports the median ratio and the number of tables on which FDE is faster, as the paper does over datasets, since a
-single table can go either way (see [Checking the Fast claim](#checking-the-fast-claim); `--tables N` sets the number of
-tables, for example `--tables 100`, `--quick` keeps only the main table, and `--no-speed` skips the timing). Both demos
-end with a short panel, *What this demo shows*: the held-out score of FDE against the best tuned learner, the
-prediction-time ratio, and where to see the other case. The summary explains why the ensemble was used or not. The demos use
-quick settings (5 Optuna trials per learner type and the light member set), so the first finishes in one to two minutes on a
-laptop; `fde demo --trials 20 --members full` runs the settings evaluated in the paper. A progress bar shows the
-stage, the elapsed time and an estimate of the remaining time, and the result compares FDE with the best tuned
-learner on held-out rows.
+The first demo evaluates FDE on real clinical data shipped with the package: 788 patients with severe fever with
+thrombocytopenia syndrome, of whom 12% died in hospital (PLOS figshare, CC BY 4.0; one of the 53 evaluation datasets of
+the accompanying paper). The second uses the breast cancer data that ships with scikit-learn. No file or download is
+needed for either. The first demo scores FDE against the best tuned learner on held-out rows and times the FDE predictor
+against greedy ensemble selection over the same members (see [Checking the Fast claim](#checking-the-fast-claim)); it
+then repeats both comparisons on 5 stratified held-out splits of the same data and reports the mean score, the median
+time ratio, and on how many splits FDE is better and faster, since a single split can go either way (`--splits N` sets
+the number of splits, `--quick` keeps the first split only, and `--no-speed` skips the timing). With `--cv 5`, the demo
+runs an outer 5-fold cross-validation instead and shows every fold with the mean and standard deviation. Both demos end
+with a short panel, *What this demo shows*: the score of FDE against the best tuned learner, the prediction-time ratio,
+where to see the other case, and how to obtain cross-validated scores. The summary explains why the ensemble was used
+or not. The demos use 5 Optuna trials per learner type and the full member set, so a split takes well under a minute
+on a laptop; `fde demo --trials 20` runs the settings evaluated in the paper. A progress bar shows the stage, the
+elapsed time and an estimate of the remaining time.
 
 ## Use
 
@@ -146,6 +156,7 @@ From the command line:
 fde fit --data train.csv --target label --out model.fde
 fde predict --model model.fde --data new.csv --proba --out scores.csv
 fde evaluate --data data.csv --target label --test-size 0.2   # holdout scores for FDE and the best tuned learner
+fde evaluate --data data.csv --target label --cv 5            # outer 5-fold cross-validation: every fold, mean and SD
 fde fit --data train.csv --target label --out light.fde --members light   # fewer members: faster prediction
 ```
 
@@ -173,10 +184,10 @@ the member set. This section is the full version of Appendix G of the accompanyi
   best tuned learner, and, on balanced data, the decision of the acceptance rule. In addition, `fde evaluate` scores FDE
   against the best tuned learner on a held-out stratified part of the data. The stored score of an audited evaluation
   run was reproduced by the package on the reference hardware (paper, Appendix I).
-- **Checking prediction time.** The command `fde demo`, without options, fits FDE on a synthetic imbalanced table and
+- **Checking prediction time.** The command `fde demo`, without options, fits FDE on the real imbalanced example and
   times, on held-out rows and one CPU core, the FDE predictor against greedy ensemble selection over the same members,
   the full member set, and the best tuned learner, with the protocol of Section IV-F of the paper, and then reports the
-  median ratio over five synthetic tables; `fde evaluate --speed`
+  median ratio over 5 held-out splits; `fde evaluate --speed`
   does the same on a user table. Times depend on the machine, so the ratio of greedy to FDE time is the quantity to
   compare.
 - **Where care is needed.** Fit time can be long on data with many features; on balanced data the best tuned learner
@@ -252,12 +263,12 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
 from fde import FDEClassifier
 
-X, y = fetch_openml(data_id=1049, return_X_y=True, as_frame=True)
+X, y = fetch_openml(data_id=1049, return_X_y=True, as_frame=True, parser="liac-arff")
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=0)
 clf = FDEClassifier(verbose=1).fit(X_train, y_train)
 print("macro-F1:", round(f1_score(y_test.astype(str), clf.predict(X_test), average="macro"), 4))
 print("ensemble used:", clf.uses_ensemble_, "| models in predictor:", clf.report_["models_in_predictor"])
-print(clf.report_["acceptance_rule"])           # lower bound of the gain on the cross-fitted training folds
+print("route:", clf.report_["route"])           # imbalanced data: the ensemble route, without the acceptance rule
 ```
 
 **Command line with your own CSV file.** This writes a CSV from the wine data, then fits, predicts and evaluates:
@@ -267,6 +278,7 @@ python -c "from sklearn.datasets import load_wine; d = load_wine(as_frame=True).
 fde fit --data wine.csv --target target --out wine.fde --trials 5 --members light
 fde predict --model wine.fde --data wine.csv --proba --out wine_scores.csv
 fde evaluate --data wine.csv --target target --trials 5 --members light
+fde evaluate --data wine.csv --target target --trials 5 --members light --cv 5
 ```
 
 On Windows, run each line separately.
@@ -276,14 +288,18 @@ On Windows, run each line separately.
 No row is used both to choose a model and to score it:
 
 1. `fde evaluate` and `fde demo` set aside a stratified share of the rows (20% by default) before fitting; these rows
-   are used only for the held-out scores.
+   are used only for the held-out scores. With `fde evaluate --cv 5` (or `fde.cross_validate(X, y, cv=5)` in Python),
+   the rows are instead split into 5 stratified folds, each fold is held out once while FDE is fitted on the others,
+   and the scores of every fold are reported with their mean and standard deviation, so that every row is scored once
+   by a model fitted without it.
 2. On balanced training rows, 3 outer folds decide whether the ensemble is used. The decision is made on rows that
    each fold's models have not seen (the cross-fitted acceptance rule). Imbalanced data skip these folds.
 3. In every fit, the learners are tuned and the combiner is fitted on 3 inner folds, and every imputer, encoder and
    scaler is fitted on its own training rows only.
 
-To compare FDE with another tool, score both on the same held-out rows. A score computed on rows that were also used
-for tuning comes out higher than the score on new data.
+To compare FDE with another tool, score both on the same held-out rows or folds. A score computed on rows that were
+also used for tuning comes out higher than the score on new data; for this reason the out-of-fold scores inside a fit,
+which also choose the members, are not reported as results.
 
 ## Checking the Fast claim
 

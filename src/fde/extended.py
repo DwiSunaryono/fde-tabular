@@ -18,6 +18,8 @@ combiner, while new rows are scored by the mean of the fold models.
 GBDTs: at most 5,000 trees, learning rate 0.05, early stopping after 100 rounds. Each encoder is fitted on the rows
 of its own fold model only.
 """
+import sys
+
 import numpy as np
 import pandas as pd
 
@@ -64,47 +66,42 @@ def _coder(Xf, cat, kind):
     return ColumnTransformer(([("num", nt, num)] if num else []) + ([("cat", ct, cat)] if cat else []))
 
 
+# macOS: PyTorch and LightGBM/XGBoost bring separate OpenMP libraries, and the MLP crashes in a process holding both, so
+# the MLP is trained in a separate process and predicts in numpy there (see _torch_mlp)
+ISOLATE_TORCH = sys.platform == "darwin"
+
+
 class _Net:
-    """Fitted MLP plus its input coder; predicts class probabilities."""
+    """Fitted MLP plus its input coder; predicts class probabilities. `net` is a PyTorch network or, when trained in a
+    separate process, the list of its layer weights."""
 
     def __init__(self, ct, net):
         self.ct, self.net = ct, net
 
     def predict_proba(self, X):
-        import torch
         A = self.ct.transform(X).astype(np.float32)
+        if isinstance(self.net, list) or ISOLATE_TORCH:
+            from ._torch_mlp import forward, weights
+            W = self.net if isinstance(self.net, list) else weights(self.net)
+            return forward(W, A)
+        import torch
         with torch.no_grad():
             return torch.softmax(self.net(torch.tensor(A, dtype=torch.float32)), 1).numpy()
 
 
 def _mlp(A, ya, H, yh, K, seed, threads):
-    import torch
-    torch.set_num_threads(threads); torch.manual_seed(seed)
-    layers, w = [], A.shape[1]
-    for _ in range(3):
-        layers += [torch.nn.Linear(w, 256), torch.nn.ReLU(), torch.nn.Dropout(0.1)]; w = 256
-    net = torch.nn.Sequential(*layers, torch.nn.Linear(w, K))
-    dev = "cuda" if device.gpu() else "cpu"; net.to(dev)
-    opt = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=0.0)
-    lossf, evalf = torch.nn.CrossEntropyLoss(label_smoothing=0.0), torch.nn.CrossEntropyLoss()
-    At, yt = torch.tensor(A, dtype=torch.float32, device=dev), torch.tensor(ya, dtype=torch.long, device=dev)
-    Ht, yht = torch.tensor(H, dtype=torch.float32, device=dev), torch.tensor(yh, dtype=torch.long, device=dev)
-    best, state, wait, g = 1e18, None, 0, torch.Generator().manual_seed(seed)
-    for _ in range(200):
-        net.train()
-        for idx in torch.randperm(len(At), generator=g).split(512):
-            opt.zero_grad(); lossf(net(At[idx]), yt[idx]).backward(); opt.step()
-        net.eval()
-        with torch.no_grad():
-            v = float(evalf(net(Ht), yht))
-        if v < best - 1e-5:
-            best, state, wait = v, {k: t.clone() for k, t in net.state_dict().items()}, 0
-        else:
-            wait += 1
-            if wait >= 10:
-                break
-    net.load_state_dict(state); net.eval()
-    return net.cpu()                                     # predict on the CPU
+    if not ISOLATE_TORCH:
+        from ._torch_mlp import train
+        return train(A, ya, H, yh, K, seed, threads, "cuda" if device.gpu() else "cpu")
+    import os, subprocess, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        src, dst = os.path.join(tmp, "in.npz"), os.path.join(tmp, "out.npz")
+        np.savez(src, A=A, ya=ya, H=H, yh=yh, K=K, seed=seed, threads=threads)
+        p = subprocess.run([sys.executable, "-m", "fde._torch_mlp", src, dst], capture_output=True, text=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"training the MLP member in a separate process failed (exit {p.returncode}): {p.stderr[-2000:]}")
+        d = np.load(dst)
+        return [(d[f"w{i}"], d[f"b{i}"]) for i in range(int(d["n"]))]
 
 
 class Bagged:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fde-tabular"
-version = "1.1.2"
+version = "1.2.0"
 description = "FDE: Fast-Deployment Ensemble for imbalanced tabular classification"
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,7 @@ dependencies = [
     "scipy>=1.11",
     "scikit-learn>=1.5",
     "imbalanced-learn>=0.12",
-    "xgboost>=2.0",
+    "xgboost>=2.0,<3.4",
     "lightgbm>=4.0",
     "catboost>=1.2",
     "optuna>=3.6",
@@ -49,3 +49,6 @@ fde = "fde.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+fde = ["data/*.csv.gz", "data/*.md"]
