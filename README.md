@@ -380,8 +380,9 @@ comparison table. See [`benchmark/README.md`](benchmark/README.md).
 ## Citation
 
 Please cite the accompanying article if you use FDE; the full reference will be added once it is published. The
-software itself is archived on Zenodo: version 1.1.2, the configuration evaluated in the accompanying paper together
-with its benchmark artifacts, has DOI [10.5281/zenodo.24075335](https://doi.org/10.5281/zenodo.24075335) (version 1.1.1:
+software itself is archived on Zenodo: version 1.2.0 has DOI
+[10.5281/zenodo.24152088](https://doi.org/10.5281/zenodo.24152088); version 1.1.2, the configuration evaluated in the
+accompanying paper together with its benchmark artifacts, has DOI [10.5281/zenodo.24075335](https://doi.org/10.5281/zenodo.24075335) (version 1.1.1:
 [10.5281/zenodo.24066927](https://doi.org/10.5281/zenodo.24066927); version 1.1.0:
 [10.5281/zenodo.24054150](https://doi.org/10.5281/zenodo.24054150); version 1.0.0:
 [10.5281/zenodo.23997869](https://doi.org/10.5281/zenodo.23997869)), and
